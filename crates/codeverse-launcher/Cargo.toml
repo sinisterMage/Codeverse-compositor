@@ -1,0 +1,35 @@
+[package]
+name = "codeverse-launcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "codeverse_launcher"
+path = "src/lib.rs"
+
+[dependencies]
+# Configuration
+codeverse-config = { path = "../codeverse-config" }
+
+# Smithay (for rendering types)
+smithay = { workspace = true, features = ["wayland_frontend", "renderer_gl"] }
+
+# Fuzzy matching
+nucleo = { workspace = true }
+nucleo-matcher = { workspace = true }
+
+# Desktop files
+freedesktop-desktop-entry = { workspace = true }
+
+# Configuration
+serde = { workspace = true }
+dirs = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }

@@ -1,0 +1,326 @@
+use codeverse_config::{Config, NordTheme};
+use codeverse_launcher::LauncherState;
+use codeverse_window::{FloatingManager, NodeId, WindowTree, WindowTreeExt, WorkspaceManager};
+use smithay::{
+    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
+    delegate_xdg_shell,
+    input::{keyboard::XkbConfig, Seat, SeatState},
+    reexports::{
+        calloop::LoopHandle,
+        wayland_server::{
+            backend::{ClientData, ClientId, DisconnectReason},
+            Display, DisplayHandle,
+        },
+    },
+    utils::{Clock, Monotonic},
+    wayland::{
+        compositor::CompositorState,
+        output::OutputManagerState,
+        shell::xdg::{ToplevelSurface, XdgShellState},
+        shm::ShmState,
+    },
+};
+use smithay::wayland::selection::data_device::DataDeviceState;
+use tracing::info;
+
+/// Main compositor state
+pub struct CodeVerseCompositor<BackendData: 'static> {
+    /// Wayland display handle
+    pub display_handle: DisplayHandle,
+
+    /// Event loop handle
+    pub loop_handle: LoopHandle<'static, Self>,
+
+    /// Smithay compositor state (handles wl_surface, wl_region, etc.)
+    pub compositor_state: CompositorState,
+
+    /// XDG shell state (handles windows, popups)
+    pub xdg_shell_state: XdgShellState,
+
+    /// Seat state (input devices)
+    pub seat_state: SeatState<Self>,
+
+    /// SHM (shared memory) state
+    pub shm_state: ShmState,
+
+    /// Data device state (clipboard, drag-and-drop)
+    pub data_device_state: DataDeviceState,
+
+    /// Output manager state (displays)
+    pub output_manager_state: OutputManagerState,
+
+    /// Seat for input
+    pub seat: Seat<Self>,
+
+    /// Window tree for tiling
+    pub window_tree: WindowTree,
+
+    /// Workspace manager (initialized after output is created)
+    pub workspace_manager: Option<WorkspaceManager>,
+
+    /// Floating window manager
+    pub floating_manager: FloatingManager,
+
+    /// Output node ID in the tree
+    pub output_node: Option<NodeId>,
+
+    /// Configuration
+    pub config: Config,
+
+    /// Nord theme
+    pub theme: NordTheme,
+
+    /// Monotonic clock
+    pub clock: Clock<Monotonic>,
+
+    /// Should the compositor exit?
+    pub running: bool,
+
+    /// Wayland socket name for spawning clients
+    pub socket_name: Option<String>,
+
+    /// Launcher state
+    pub launcher: Option<LauncherState>,
+
+    /// Is launcher currently active?
+    pub launcher_active: bool,
+
+    /// Backend-specific data
+    pub backend_data: BackendData,
+}
+
+impl<BackendData> CodeVerseCompositor<BackendData> {
+    pub fn new(
+        display: &mut Display<Self>,
+        loop_handle: LoopHandle<'static, Self>,
+        backend_data: BackendData,
+    ) -> Self {
+        let display_handle = display.handle();
+
+        // Initialize Smithay states
+        let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let mut seat_state = SeatState::new();
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+
+        // Create seat
+        let mut seat = seat_state.new_wl_seat(&display_handle, "seat-0");
+
+        // Add keyboard capability
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
+            .expect("Failed to add keyboard to seat");
+
+        // Add pointer capability
+        seat.add_pointer();
+
+        // Load configuration
+        let config = Config::load().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load config: {}, using defaults", e);
+            Config::default()
+        });
+
+        let window_tree = WindowTree::new();
+        let workspace_manager = None; // Will be initialized when output is created
+        let floating_manager = FloatingManager::new();
+        let output_node = None;
+        let theme = config.get_theme();
+        let clock = Clock::new();
+
+        Self {
+            display_handle,
+            loop_handle,
+            compositor_state,
+            xdg_shell_state,
+            seat_state,
+            shm_state,
+            data_device_state,
+            output_manager_state,
+            seat,
+            window_tree,
+            workspace_manager,
+            floating_manager,
+            output_node,
+            config,
+            theme,
+            clock,
+            running: true,
+            socket_name: None,
+            launcher: None, // Initialized lazily on first use
+            launcher_active: false,
+            backend_data,
+        }
+    }
+
+    /// Initialize workspace manager for an output
+    pub fn init_workspace_manager(&mut self) {
+        use codeverse_window::{Container, ContainerType};
+
+        // Create output node in tree
+        let output = Container::new(NodeId::default(), ContainerType::Output);
+        let output_id = self.window_tree.insert(output);
+
+        // Create workspace manager
+        let workspace_manager = WorkspaceManager::new(&mut self.window_tree, output_id);
+
+        self.output_node = Some(output_id);
+        self.workspace_manager = Some(workspace_manager);
+
+        info!("Workspace manager initialized with output {:?}", output_id);
+    }
+
+    /// Handle a new toplevel window
+    pub fn handle_new_toplevel(&mut self, toplevel: ToplevelSurface) {
+        info!("New toplevel window created");
+
+        // Insert window into tree
+        if let Some(ref mut workspace_manager) = self.workspace_manager {
+            if let Some(workspace_id) = workspace_manager.active_workspace() {
+                match self.window_tree.insert_window(toplevel.clone(), workspace_id) {
+                    Ok(window_id) => {
+                        info!("Window inserted into tree with id {:?}", window_id);
+
+                        // Send initial configure with a default size
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some((800, 600).into());
+                        });
+                        toplevel.send_configure();
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to insert window into tree: {}", e);
+                    }
+                }
+            } else {
+                tracing::error!("No active workspace found");
+            }
+        } else {
+            tracing::warn!("Workspace manager not initialized, window not tiled");
+
+            // Fallback: just configure the window
+            toplevel.with_pending_state(|state| {
+                state.size = Some((800, 600).into());
+            });
+            toplevel.send_configure();
+        }
+    }
+
+    /// Handle window close
+    pub fn handle_toplevel_closed(&mut self, toplevel: &ToplevelSurface) {
+        info!("Toplevel window closed");
+
+        // Find and remove window from tree
+        if let Some(window_id) = self.window_tree.find_window_by_handle(toplevel) {
+            match self.window_tree.remove_window(window_id) {
+                Ok(()) => {
+                    info!("Window {:?} removed from tree", window_id);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to remove window from tree: {}", e);
+                }
+            }
+        } else {
+            tracing::warn!("Could not find window in tree to remove");
+        }
+    }
+
+    /// Toggle the launcher on/off
+    pub fn toggle_launcher(&mut self) {
+        self.launcher_active = !self.launcher_active;
+
+        if self.launcher_active {
+            // Initialize launcher if not yet created
+            if self.launcher.is_none() {
+                info!("Initializing launcher (first time)...");
+                self.launcher = Some(LauncherState::new());
+            }
+
+            // Reset launcher state when opening
+            if let Some(ref mut launcher) = self.launcher {
+                launcher.reset();
+            }
+
+            info!("Launcher opened");
+        } else {
+            info!("Launcher closed");
+        }
+    }
+
+    /// Launch the selected app from the launcher
+    pub fn launch_selected_app(&mut self) -> Result<(), String> {
+        if !self.launcher_active {
+            return Err("Launcher is not active".to_string());
+        }
+
+        let launcher = self.launcher.as_ref().ok_or("Launcher not initialized")?;
+        let app = launcher.selected_app().ok_or("No app selected")?;
+
+        info!("Launching app: {} ({})", app.name, app.exec);
+
+        // Get the command to execute
+        let command = app.get_command();
+
+        // Spawn the application
+        use std::process::Command;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(&command);
+
+        // Set WAYLAND_DISPLAY to connect to our compositor
+        if let Some(ref socket) = self.socket_name {
+            cmd.env("WAYLAND_DISPLAY", socket);
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                info!("Launched {} (PID: {})", app.name, child.id());
+                // Close launcher after successful launch
+                self.launcher_active = false;
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to launch {}: {}", app.name, e);
+                Err(format!("Failed to launch: {}", e))
+            }
+        }
+    }
+
+    /// Reload configuration from disk
+    pub fn reload_config(&mut self) {
+        info!("Reloading configuration...");
+
+        match Config::load() {
+            Ok(new_config) => {
+                self.config = new_config;
+                self.theme = self.config.get_theme();
+                info!("Configuration reloaded successfully");
+            }
+            Err(e) => {
+                tracing::error!("Failed to reload config: {}", e);
+            }
+        }
+    }
+}
+
+// Smithay delegate implementations
+delegate_compositor!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+delegate_xdg_shell!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+delegate_shm!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+delegate_seat!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+delegate_data_device!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+delegate_output!(@<BackendData: 'static> CodeVerseCompositor<BackendData>);
+
+/// Client data for Wayland clients
+#[derive(Default)]
+pub struct ClientState {
+    pub compositor_state: smithay::wayland::compositor::CompositorClientState,
+}
+
+impl ClientData for ClientState {
+    fn initialized(&self, _client_id: ClientId) {
+        info!("Client initialized");
+    }
+
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
+        info!("Client disconnected");
+    }
+}

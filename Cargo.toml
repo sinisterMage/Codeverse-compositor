@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/codeverse-compositor",
+    "crates/codeverse-window",
+    "crates/codeverse-launcher",
+    "crates/codeverse-config",
+    "crates/codeverse-ipc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["CodeVerse Team"]
+license = "MIT"
+repository = "https://github.com/codeverse/compositor"
+
+[workspace.dependencies]
+# Smithay core - using specific commit (9ccbd35f) that added libdisplay-info 0.3.0 support
+# This commit is after v0.7.0 but before the major API changes, providing stable compatibility
+# Features enabled for both winit (development) and DRM (production) backends
+smithay = { git = "https://github.com/Smithay/smithay", rev = "9ccbd35f51842934f22b5a85ca0e3be1b99b27f", default-features = false, features = [
+    "desktop",
+    "wayland_frontend",
+    "renderer_gl",
+    "renderer_multi",
+    "backend_winit",
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+] }
+smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "9ccbd35f51842934f22b5a85ca0e3be1b99b27f" }
+
+# Event loop
+calloop = { version = "0.13", features = ["signals"] }
+
+# Wayland
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "unstable"] }
+
+# Graphics
+glow = "0.13"
+
+# Input
+xkbcommon = "0.7"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+
+# Fuzzy finder
+nucleo = "0.5"
+nucleo-matcher = "0.3"
+
+# Desktop file parsing
+freedesktop-desktop-entry = "0.7"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Data structures
+slotmap = "1.0"
+indexmap = "2.0"
+
+# Geometry
+euclid = "0.22"
+
+# DRM/KMS (for production TTY backend)
+gbm = "0.15"
+drm = "0.12"
+libseat = "0.2"
+input = "0.9"
+
+# IPC
+serde_json = "1"
+nix = { version = "0.29", features = ["socket"] }

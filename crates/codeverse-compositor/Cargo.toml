@@ -1,0 +1,50 @@
+[package]
+name = "codeverse-compositor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codeverse-compositor"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+codeverse-window = { path = "../codeverse-window" }
+codeverse-launcher = { path = "../codeverse-launcher" }
+codeverse-config = { path = "../codeverse-config" }
+
+# Smithay (all features inherited from workspace, now using git master for libdisplay-info 0.3.0)
+smithay = { workspace = true }
+smithay-drm-extras = { workspace = true }
+
+# Event loop
+calloop = { workspace = true }
+
+# Wayland
+wayland-server = { workspace = true }
+wayland-protocols = { workspace = true }
+
+# Graphics
+glow = { workspace = true }
+
+# Input
+xkbcommon = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Data structures
+indexmap = { workspace = true }
+
+# DRM/KMS backend dependencies
+gbm = { workspace = true }
+drm = { workspace = true }
+libseat = { workspace = true }
+input = { workspace = true }

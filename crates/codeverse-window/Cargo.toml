@@ -1,0 +1,30 @@
+[package]
+name = "codeverse-window"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "codeverse_window"
+path = "src/lib.rs"
+
+[dependencies]
+# Configuration
+codeverse-config = { path = "../codeverse-config" }
+
+# Smithay (for types)
+smithay = { workspace = true, features = ["wayland_frontend"] }
+
+# Geometry
+euclid = { workspace = true }
+
+# Data structures
+slotmap = { workspace = true }
+indexmap = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }

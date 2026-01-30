@@ -1,0 +1,103 @@
+# CodeVerse Compositor Configuration
+# Copy this file to ~/.config/codeverse-compositor/config.toml to customize
+
+[general]
+# Border width around windows (in pixels)
+border_width = 2
+
+# Gap between windows (in pixels)
+gap_width = 10
+
+# Default layout for new workspaces
+# Options: "splith" (horizontal), "splitv" (vertical), "stacking", "tabbed"
+default_layout = "splith"
+
+# Focus follows mouse (not yet implemented)
+focus_follows_mouse = false
+
+[theme]
+# Use Nord color scheme (currently the only option)
+use_nord = true
+
+# Custom colors (hex format #RRGGBB) - overrides Nord theme if set
+# focused_border = "#88c0d0"
+# unfocused_border = "#4c566a"
+# background = "#2e3440"
+
+[workspaces]
+# Number of workspaces (1-10)
+count = 10
+
+# Custom workspace names (optional)
+# names = ["web", "code", "term", "4", "5", "6", "7", "8", "9", "10"]
+
+[launcher]
+# Additional paths to search for .desktop files
+# additional_paths = ["/opt/applications"]
+
+# Maximum number of results to show
+max_results = 10
+
+# Show application descriptions
+show_descriptions = true
+
+# Keybindings
+# Format: "Modifier+Key" = action
+# Modifiers: Super (or Mod), Shift, Ctrl, Alt
+# Keys: letters (a-z), numbers (0-9), function keys (F1-F12),
+#       special keys (space, return, escape, tab, etc.)
+
+[keybindings.bindings]
+# Core commands
+"Super+Shift+q" = "quit"
+"Super+Shift+c" = "close_window"
+"Super+Shift+r" = "reload_config"
+
+# Navigation (vim-style: h=left, j=down, k=up, l=right)
+"Super+h" = { navigate_focus = "left" }
+"Super+j" = { navigate_focus = "down" }
+"Super+k" = { navigate_focus = "up" }
+"Super+l" = { navigate_focus = "right" }
+
+# Window splitting
+"Super+b" = { split = "horizontal" }
+"Super+v" = { split = "vertical" }
+
+# Workspace switching (Super+1 through Super+0)
+"Super+1" = { switch_workspace = 1 }
+"Super+2" = { switch_workspace = 2 }
+"Super+3" = { switch_workspace = 3 }
+"Super+4" = { switch_workspace = 4 }
+"Super+5" = { switch_workspace = 5 }
+"Super+6" = { switch_workspace = 6 }
+"Super+7" = { switch_workspace = 7 }
+"Super+8" = { switch_workspace = 8 }
+"Super+9" = { switch_workspace = 9 }
+"Super+0" = { switch_workspace = 10 }
+
+# Move window to workspace (Super+Shift+1 through Super+Shift+0)
+"Super+Shift+1" = { move_to_workspace = 1 }
+"Super+Shift+2" = { move_to_workspace = 2 }
+"Super+Shift+3" = { move_to_workspace = 3 }
+"Super+Shift+4" = { move_to_workspace = 4 }
+"Super+Shift+5" = { move_to_workspace = 5 }
+"Super+Shift+6" = { move_to_workspace = 6 }
+"Super+Shift+7" = { move_to_workspace = 7 }
+"Super+Shift+8" = { move_to_workspace = 8 }
+"Super+Shift+9" = { move_to_workspace = 9 }
+"Super+Shift+0" = { move_to_workspace = 10 }
+
+# Layout switching
+"Super+e" = { change_layout = "splith" }    # Horizontal split
+"Super+w" = { change_layout = "splitv" }    # Vertical split
+"Super+s" = { change_layout = "stacking" }  # Stacking layout
+"Super+t" = { change_layout = "tabbed" }    # Tabbed layout
+
+# Floating windows
+"Super+Shift+space" = "toggle_floating"
+
+# Launcher (Spotlight-like fuzzy finder)
+"Super+d" = "toggle_launcher"
+
+# Testing/Development
+"F12" = "spawn_terminal"
