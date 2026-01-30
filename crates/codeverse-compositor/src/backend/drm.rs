@@ -7,32 +7,37 @@ use smithay::{
         },
         drm::{
             exporter::gbm::GbmFramebufferExporter,
-            output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
+            output::{DrmOutput, DrmOutputManager},
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
         },
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            element::{AsRenderElements, solid::SolidColorRenderElement},
-            gles::{Capability, GlesRenderer},
-            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer},
+            damage::OutputDamageTracker,
+            element::{
+                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                Kind,
+            },
+            gles::GlesRenderer,
+            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer, MultiTexture},
+            Color32F,
         },
         session::{
-            libseat::{self, LibSeatSession},
+            libseat::LibSeatSession,
             Event as SessionEvent, Session,
         },
         udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     output::{Mode as WlMode, Output, PhysicalProperties, Subpixel},
     reexports::{
-        calloop::{EventLoop, LoopHandle, RegistrationToken},
-        drm::control::{connector, crtc, Device, ModeTypeFlags},
+        calloop::{EventLoop, RegistrationToken},
+        drm::control::{connector, crtc, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::{Display, DisplayHandle},
     },
-    utils::{DeviceFd, Point, Rectangle, Transform, Physical, Size},
+    utils::{DeviceFd, Point},
     wayland::socket::ListeningSocketSource,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -60,20 +65,25 @@ pub struct DrmBackendData {
     backends: HashMap<DrmNode, BackendData>,
 }
 
-// Type alias for our render element
-type OutputRenderElement = SolidColorRenderElement;
+// User data type for DrmOutput (passed to queue_frame, returned on vblank)
+type FrameUserData = ();
+
+// Type alias for the DRM output manager
+type DrmOutputMgr = DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameUserData, DrmDeviceFd>;
+type DrmOutputType = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameUserData, DrmDeviceFd>;
 
 struct BackendData {
     _registration_token: RegistrationToken,
-    drm_output_manager: DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, OutputRenderElement, DrmDeviceFd>,
+    drm_output_manager: DrmOutputMgr,
     drm_scanner: DrmScanner,
     render_node: Option<DrmNode>,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
 }
 
 struct SurfaceData {
-    _output: Output,
-    drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, OutputRenderElement, DrmDeviceFd>,
+    output: Output,
+    drm_output: DrmOutputType,
+    damage_tracker: OutputDamageTracker,
 }
 
 pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
@@ -114,6 +124,9 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut compositor = CodeVerseCompositor::new(&mut display, event_loop.handle(), data);
 
+    // Initialize workspace manager (required for keybindings to work)
+    compositor.init_workspace_manager();
+
     // Initialize udev backend
     let udev_backend = UdevBackend::new(&compositor.backend_data.session.seat())?;
 
@@ -129,20 +142,8 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
     // Insert libinput event source (simplified from anvil)
     event_loop
         .handle()
-        .insert_source(libinput_backend, move |event, _, _compositor| {
-            // TODO: Process input events properly
-            match event {
-                InputEvent::Keyboard { .. } => {
-                    debug!("Keyboard event");
-                }
-                InputEvent::PointerMotion { .. } => {
-                    debug!("Pointer motion event");
-                }
-                InputEvent::PointerButton { .. } => {
-                    debug!("Pointer button event");
-                }
-                _ => {}
-            }
+        .insert_source(libinput_backend, move |event, _, compositor| {
+            compositor.handle_input_event(event);
         })?;
 
     // Insert session event source (from anvil)
@@ -208,6 +209,9 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
     let socket_name = socket_source.socket_name().to_string_lossy().into_owned();
     info!("Wayland socket: {}", socket_name);
 
+    // Store socket name so F12 can spawn terminals connected to our compositor
+    compositor.socket_name = Some(socket_name);
+
     event_loop
         .handle()
         .insert_source(socket_source, move |client_stream, _, compositor| {
@@ -222,7 +226,14 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
     // Main event loop
     info!("Starting CodeVerse Compositor with DRM backend");
     loop {
+        // Dispatch pending events
         event_loop.dispatch(Some(Duration::from_millis(16)), &mut compositor)?;
+
+        // Render all outputs
+        compositor.render_all_outputs();
+
+        // Flush Wayland clients
+        compositor.display_handle.flush_clients().ok();
     }
 }
 
@@ -251,10 +262,10 @@ impl CodeVerseCompositor<DrmBackendData> {
         let node_clone = node;
         let registration_token = self.loop_handle.insert_source(
             notifier,
-            move |event, _metadata, _compositor| match event {
+            move |event, _metadata, compositor| match event {
                 DrmEvent::VBlank(crtc) => {
                     debug!("VBlank on {:?} crtc {:?}", node_clone, crtc);
-                    // TODO: Handle frame completion
+                    compositor.on_vblank(node_clone, crtc);
                 }
                 DrmEvent::Error(error) => {
                     error!("DRM error: {:?}", error);
@@ -425,18 +436,23 @@ impl CodeVerseCompositor<DrmBackendData> {
     // Initialize the DRM output (from anvil)
     // We use MultiRenderer type
     type Renderer<'a> = MultiRenderer<'a, 'a, GbmGlesBackend<GlesRenderer, DrmDeviceFd>, GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
+    type RenderElement<'a> = WaylandSurfaceRenderElement<Renderer<'a>>;
+
+    // Empty render elements for initialization
+    use smithay::backend::drm::output::DrmOutputRenderElements;
+    let init_elements: DrmOutputRenderElements<Renderer<'_>, RenderElement<'_>> = DrmOutputRenderElements::default();
 
     let drm_output = match backend
         .drm_output_manager
         .lock()
-        .initialize_output::<Renderer<'_>, OutputRenderElement>(
+        .initialize_output::<Renderer<'_>, RenderElement<'_>>(
             crtc,
             drm_mode,
             &[connector.handle()],
             &output,
             planes,
             &mut renderer,
-            &DrmOutputRenderElements::default(),
+            &init_elements,
         ) {
         Ok(output) => output,
         Err(err) => {
@@ -445,11 +461,15 @@ impl CodeVerseCompositor<DrmBackendData> {
         }
     };
 
+    // Create damage tracker for the output
+    let damage_tracker = OutputDamageTracker::from_output(&output);
+
     backend.surfaces.insert(
         crtc,
         SurfaceData {
-            _output: output.clone(),
+            output: output.clone(),
             drm_output,
+            damage_tracker,
         },
     );
 
@@ -473,4 +493,260 @@ impl CodeVerseCompositor<DrmBackendData> {
             info!("DRM device {:?} removed", node);
         }
     }
+
+    /// Handle input events from libinput
+    fn handle_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        use crate::input::handle_keyboard_shortcut;
+        use smithay::backend::input::{Event, KeyState, KeyboardKeyEvent};
+        use smithay::input::keyboard::FilterResult;
+
+        match event {
+            InputEvent::Keyboard { event } => {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let time = Event::time_msec(&event);
+                let key_code = event.key_code();
+                let state = event.state();
+
+                debug!("Keyboard event: key={:?} state={:?}", key_code, state);
+
+                // Process through the seat keyboard
+                let keyboard = self.seat.get_keyboard().unwrap();
+                keyboard.input::<(), _>(
+                    self,
+                    key_code,
+                    state,
+                    serial,
+                    time,
+                    |compositor, modifiers, keysym_handle| {
+                        // Only handle key press events for shortcuts
+                        if state != KeyState::Pressed {
+                            return FilterResult::Forward;
+                        }
+
+                        let keysym = keysym_handle.modified_sym();
+
+                        // Try to handle as compositor shortcut
+                        if handle_keyboard_shortcut(compositor, keysym, *modifiers) {
+                            info!("Shortcut handled: {:?}", keysym);
+                            FilterResult::Intercept(())
+                        } else {
+                            // Forward to focused client
+                            FilterResult::Forward
+                        }
+                    },
+                );
+            }
+            InputEvent::PointerMotion { event } => {
+                debug!("Pointer motion event");
+                // TODO: Handle pointer motion properly
+            }
+            InputEvent::PointerMotionAbsolute { event } => {
+                debug!("Pointer absolute motion event");
+                // TODO: Handle absolute pointer motion
+            }
+            InputEvent::PointerButton { event } => {
+                debug!("Pointer button event");
+                // TODO: Handle pointer button properly
+            }
+            InputEvent::PointerAxis { event } => {
+                debug!("Pointer axis event");
+                // TODO: Handle pointer scroll
+            }
+            _ => {
+                // Other events (touch, tablet, etc.)
+            }
+        }
+    }
+
+    /// Handle VBlank event - called when a frame has been displayed
+    fn on_vblank(&mut self, node: DrmNode, crtc: crtc::Handle) {
+        let Some(backend) = self.backend_data.backends.get_mut(&node) else {
+            return;
+        };
+
+        let Some(surface_data) = backend.surfaces.get_mut(&crtc) else {
+            return;
+        };
+
+        // Notify the DRM output that the frame has been submitted
+        if let Err(e) = surface_data.drm_output.frame_submitted() {
+            warn!("Failed to mark frame as submitted: {:?}", e);
+        }
+    }
+
+    /// Render all outputs
+    fn render_all_outputs(&mut self) {
+        // Collect what we need to render
+        let nodes: Vec<DrmNode> = self.backend_data.backends.keys().copied().collect();
+
+        for node in nodes {
+            self.render_node_outputs(node);
+        }
+    }
+
+    /// Render all outputs for a specific DRM node
+    fn render_node_outputs(&mut self, node: DrmNode) {
+        let Some(backend) = self.backend_data.backends.get_mut(&node) else {
+            return;
+        };
+
+        let render_node = backend.render_node.unwrap_or(self.backend_data.primary_gpu);
+
+        // Collect crtcs to render
+        let crtcs: Vec<crtc::Handle> = backend.surfaces.keys().copied().collect();
+
+        for crtc in crtcs {
+            if let Err(e) = self.render_surface(node, crtc, render_node) {
+                warn!("Failed to render surface on {:?}: {}", crtc, e);
+            }
+        }
+    }
+
+    /// Render a single surface/output
+    fn render_surface(
+        &mut self,
+        node: DrmNode,
+        crtc: crtc::Handle,
+        render_node: DrmNode,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use smithay::backend::drm::compositor::FrameFlags;
+
+        // Renderer type alias for this function
+        type Renderer<'a> = MultiRenderer<'a, 'a, GbmGlesBackend<GlesRenderer, DrmDeviceFd>, GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
+        type RenderElement<'a> = WaylandSurfaceRenderElement<Renderer<'a>>;
+
+        // Get renderer for this GPU
+        let mut renderer = self.backend_data.gpus.single_renderer(&render_node)?;
+
+        // Get screen geometry from the output for layout calculation
+        let screen_geometry = {
+            let backend = self.backend_data.backends.get(&node).ok_or("Backend not found for geometry")?;
+            let surface_data = backend.surfaces.get(&crtc).ok_or("Surface not found for geometry")?;
+            let mode = surface_data.output.current_mode().ok_or("No output mode")?;
+            codeverse_window::Rectangle {
+                x: 0,
+                y: 0,
+                width: mode.size.w as u32,
+                height: mode.size.h as u32,
+            }
+        };
+
+        // Calculate layout before rendering to ensure windows have proper geometries
+        if let Some(ref mut manager) = self.workspace_manager {
+            manager.layout_active_workspace(&mut self.window_tree, screen_geometry);
+        }
+
+        // Collect visible windows and their surfaces
+        let visible_windows = if let Some(ref manager) = self.workspace_manager {
+            let windows = manager.visible_windows(&self.window_tree);
+            debug!("WorkspaceManager found {} visible windows", windows.len());
+            windows
+        } else {
+            debug!("No WorkspaceManager, no visible windows");
+            vec![]
+        };
+
+        // Collect window surfaces with their locations
+        let mut window_surfaces = Vec::new();
+        for window_id in &visible_windows {
+            if let Some(container) = self.window_tree.get(*window_id) {
+                debug!("Window {:?} found in tree, has_window={}", window_id, container.window.is_some());
+                if let Some(ref window_handle) = container.window {
+                    let geom = container.geometry;
+                    let location = Point::from((geom.x, geom.y));
+                    let surface = window_handle.wl_surface().clone();
+                    debug!("Window {:?} at location {:?}, geom: {:?}", window_id, location, geom);
+                    window_surfaces.push((surface, location));
+                }
+            } else {
+                debug!("Window {:?} NOT found in tree", window_id);
+            }
+        }
+
+        debug!("Collected {} window surfaces for rendering", window_surfaces.len());
+
+        // Create render elements from window surfaces
+        let mut render_elements: Vec<RenderElement<'_>> = Vec::new();
+        for (surface, location) in &window_surfaces {
+            let elements = render_elements_from_surface_tree(
+                &mut renderer,
+                surface,
+                *location,
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            );
+            debug!("Created {} render elements for surface at {:?}", elements.len(), location);
+            render_elements.extend(elements);
+        }
+        debug!("Total render elements: {}", render_elements.len());
+
+        // Get the backend and surface data
+        let backend = self.backend_data.backends.get_mut(&node).ok_or("Backend not found")?;
+        let surface_data = backend.surfaces.get_mut(&crtc).ok_or("Surface not found")?;
+
+        // Nord theme background color (nord0: #2e3440)
+        let clear_color = Color32F::new(
+            0x2e as f32 / 255.0,
+            0x34 as f32 / 255.0,
+            0x40 as f32 / 255.0,
+            1.0,
+        );
+
+        // Render the frame
+        match surface_data.drm_output.render_frame::<Renderer<'_>, RenderElement<'_>>(
+            &mut renderer,
+            &render_elements,
+            clear_color,
+            FrameFlags::empty(),
+        ) {
+            Ok(render_result) => {
+                // Queue the frame (even if empty, to show background)
+                if let Err(e) = surface_data.drm_output.queue_frame(()) {
+                    warn!("Failed to queue frame: {:?}", e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to render frame: {:?}", e);
+            }
+        }
+
+        // Send frame callbacks to windows
+        let time = self.clock.now().as_millis() as u32;
+        for (surface, _) in &window_surfaces {
+            send_frames_surface_tree_drm(surface, time);
+        }
+
+        Ok(())
+    }
+}
+
+/// Send frame callbacks to a surface tree (helper for DRM backend)
+fn send_frames_surface_tree_drm(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    time: u32,
+) {
+    use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |surface, states, _| {
+            use smithay::wayland::compositor::SurfaceAttributes;
+            use std::cell::RefCell;
+
+            // Send frame callback
+            for callback in states
+                .cached_state
+                .get::<SurfaceAttributes>()
+                .current()
+                .frame_callbacks
+                .drain(..)
+            {
+                callback.done(time);
+            }
+        },
+        |_, _, _| true,
+    );
 }
