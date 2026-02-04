@@ -40,7 +40,7 @@ pub trait WindowTreeExt {
     fn split_focused(&mut self, orientation: Orientation) -> Result<NodeId, String>;
 
     /// Calculate layout geometries for all visible containers
-    fn calculate_layout(&mut self, workspace_id: NodeId, screen_geometry: Rectangle);
+    fn calculate_layout(&mut self, workspace_id: NodeId, screen_geometry: Rectangle, gap_width: i32);
 
     /// Get the workspace containing a node
     fn find_workspace(&self, node_id: NodeId) -> Option<NodeId>;
@@ -204,8 +204,8 @@ impl WindowTreeExt for WindowTree {
         Ok(split_id)
     }
 
-    fn calculate_layout(&mut self, workspace_id: NodeId, screen_geometry: Rectangle) {
-        debug!("Calculating layout for workspace {:?}", workspace_id);
+    fn calculate_layout(&mut self, workspace_id: NodeId, screen_geometry: Rectangle, gap_width: i32) {
+        debug!("Calculating layout for workspace {:?} with gap_width {}", workspace_id, gap_width);
 
         // Set workspace geometry
         if let Some(workspace) = self.get_mut(workspace_id) {
@@ -213,7 +213,7 @@ impl WindowTreeExt for WindowTree {
         }
 
         // Recursively layout children
-        self.layout_container(workspace_id, screen_geometry);
+        self.layout_container(workspace_id, screen_geometry, gap_width);
     }
 
     fn find_workspace(&self, mut node_id: NodeId) -> Option<NodeId> {
@@ -294,7 +294,7 @@ impl WindowTree {
     }
 
     /// Layout a container and its children
-    fn layout_container(&mut self, container_id: NodeId, geometry: Rectangle) {
+    fn layout_container(&mut self, container_id: NodeId, geometry: Rectangle, gap_width: i32) {
         let (layout, children) = {
             let container = match self.get(container_id) {
                 Some(c) => c,
@@ -308,8 +308,6 @@ impl WindowTree {
         }
 
         let num_children = children.len();
-        let border_width = 2; // TODO: Get from theme
-        let gap_width = 4; // TODO: Get from theme
 
         match layout {
             LayoutMode::SplitH => {
@@ -330,7 +328,7 @@ impl WindowTree {
                     }
 
                     // Recursively layout this child
-                    self.layout_container(child_id, child_geometry);
+                    self.layout_container(child_id, child_geometry, gap_width);
 
                     x += child_width + gap_width;
                 }
@@ -353,7 +351,7 @@ impl WindowTree {
                     }
 
                     // Recursively layout this child
-                    self.layout_container(child_id, child_geometry);
+                    self.layout_container(child_id, child_geometry, gap_width);
 
                     y += child_height + gap_width;
                 }
@@ -364,7 +362,7 @@ impl WindowTree {
                     if let Some(child) = self.get_mut(child_id) {
                         child.geometry = geometry;
                     }
-                    self.layout_container(child_id, geometry);
+                    self.layout_container(child_id, geometry, gap_width);
                 }
             }
             LayoutMode::Tabbed => {
@@ -381,7 +379,7 @@ impl WindowTree {
                     if let Some(child) = self.get_mut(child_id) {
                         child.geometry = content_geometry;
                     }
-                    self.layout_container(child_id, content_geometry);
+                    self.layout_container(child_id, content_geometry, gap_width);
                 }
             }
         }

@@ -23,6 +23,12 @@ pub struct Config {
 
     #[serde(default)]
     pub launcher: LauncherConfig,
+
+    #[serde(default)]
+    pub wallpaper: WallpaperConfig,
+
+    #[serde(default)]
+    pub outputs: Vec<OutputConfig>,
 }
 
 /// General compositor settings
@@ -43,6 +49,18 @@ pub struct GeneralConfig {
     /// Focus follows mouse
     #[serde(default)]
     pub focus_follows_mouse: bool,
+
+    /// Enable window borders
+    #[serde(default = "default_true")]
+    pub borders_enabled: bool,
+
+    /// Enable window shadows (not yet implemented)
+    #[serde(default)]
+    pub shadows_enabled: bool,
+
+    /// Title bar height for floating windows (in pixels)
+    #[serde(default = "default_title_bar_height")]
+    pub title_bar_height: u32,
 }
 
 impl Default for GeneralConfig {
@@ -52,8 +70,19 @@ impl Default for GeneralConfig {
             gap_width: default_gap_width(),
             default_layout: default_layout(),
             focus_follows_mouse: false,
+            borders_enabled: true,
+            shadows_enabled: false,
+            title_bar_height: default_title_bar_height(),
         }
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_title_bar_height() -> u32 {
+    30
 }
 
 fn default_border_width() -> u32 {
@@ -159,6 +188,70 @@ fn default_show_descriptions() -> bool {
     true
 }
 
+/// Wallpaper configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WallpaperConfig {
+    /// Path to wallpaper image
+    pub path: Option<String>,
+
+    /// Scaling mode: "fill", "fit", "stretch", "center", "tile"
+    #[serde(default = "default_wallpaper_mode")]
+    pub mode: String,
+
+    /// Per-workspace wallpapers (optional)
+    #[serde(default)]
+    pub per_workspace: Vec<WorkspaceWallpaper>,
+}
+
+/// Per-workspace wallpaper configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceWallpaper {
+    /// Workspace number (1-based)
+    pub workspace: usize,
+    /// Path to wallpaper image
+    pub path: String,
+    /// Optional scaling mode override
+    pub mode: Option<String>,
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            mode: default_wallpaper_mode(),
+            per_workspace: vec![],
+        }
+    }
+}
+
+fn default_wallpaper_mode() -> String {
+    "fill".to_string()
+}
+
+/// Output/Display configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
+    /// Output name (e.g., "HDMI-A-1")
+    pub name: String,
+
+    /// Resolution (width, height)
+    pub resolution: Option<(u32, u32)>,
+
+    /// Refresh rate in Hz
+    pub refresh_rate: Option<u32>,
+
+    /// Scale factor
+    #[serde(default = "default_scale")]
+    pub scale: f64,
+
+    /// Position (x, y) for multi-monitor setups
+    pub position: Option<(i32, i32)>,
+}
+
+fn default_scale() -> f64 {
+    1.0
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -167,6 +260,8 @@ impl Default for Config {
             keybindings: KeybindingsConfig::default(),
             workspaces: WorkspacesConfig::default(),
             launcher: LauncherConfig::default(),
+            wallpaper: WallpaperConfig::default(),
+            outputs: vec![],
         }
     }
 }

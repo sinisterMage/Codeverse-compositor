@@ -1,3 +1,4 @@
+use crate::render::{ScaleMode, WallpaperCache};
 use codeverse_config::{Config, NordTheme};
 use codeverse_launcher::LauncherState;
 use codeverse_window::{FloatingManager, NodeId, WindowTree, WindowTreeExt, WorkspaceManager};
@@ -85,6 +86,12 @@ pub struct CodeVerseCompositor<BackendData: 'static> {
     /// Is launcher currently active?
     pub launcher_active: bool,
 
+    /// Wallpaper cache for storing loaded and scaled textures
+    pub wallpaper_cache: WallpaperCache,
+
+    /// Cached screen geometry (updated during rendering, used by commit handler)
+    pub last_screen_geometry: Option<codeverse_window::Rectangle>,
+
     /// Backend-specific data
     pub backend_data: BackendData,
 }
@@ -149,6 +156,8 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
             socket_name: None,
             launcher: None, // Initialized lazily on first use
             launcher_active: false,
+            wallpaper_cache: WallpaperCache::new(),
+            last_screen_geometry: None,
             backend_data,
         }
     }
@@ -180,6 +189,16 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
                 match self.window_tree.insert_window(toplevel.clone(), workspace_id) {
                     Ok(window_id) => {
                         info!("Window inserted into tree with id {:?}", window_id);
+
+                        // Set border properties from config
+                        if let Some(container) = self.window_tree.get_mut(window_id) {
+                            container.border_width = self.config.general.border_width;
+                            // New windows start unfocused
+                            container.border_color = self.theme.unfocused_border();
+                        }
+
+                        // Update border colors for all windows (the new window may be focused)
+                        self.update_window_border_colors();
 
                         // Send initial configure with a default size
                         toplevel.with_pending_state(|state| {
@@ -293,9 +312,78 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
                 self.config = new_config;
                 self.theme = self.config.get_theme();
                 info!("Configuration reloaded successfully");
+
+                // Update border colors after config reload
+                self.update_window_border_colors();
+
+                // Clear wallpaper cache to force reload on next render
+                self.wallpaper_cache.clear();
+                info!("Wallpaper cache cleared");
             }
             Err(e) => {
                 tracing::error!("Failed to reload config: {}", e);
+            }
+        }
+    }
+
+    /// Get the wallpaper path for the current workspace
+    pub fn get_wallpaper_path(&self, workspace_index: Option<usize>) -> Option<&str> {
+        // Check for per-workspace wallpaper first
+        if let Some(index) = workspace_index {
+            if let Some(ws_wallpaper) = self
+                .config
+                .wallpaper
+                .per_workspace
+                .iter()
+                .find(|ws| ws.workspace == index + 1)
+            {
+                return Some(&ws_wallpaper.path);
+            }
+        }
+
+        // Fall back to global wallpaper
+        self.config.wallpaper.path.as_deref()
+    }
+
+    /// Get the wallpaper scale mode for the current workspace
+    pub fn get_wallpaper_mode(&self, workspace_index: Option<usize>) -> ScaleMode {
+        // Check for per-workspace wallpaper mode first
+        if let Some(index) = workspace_index {
+            if let Some(ws_wallpaper) = self
+                .config
+                .wallpaper
+                .per_workspace
+                .iter()
+                .find(|ws| ws.workspace == index + 1)
+            {
+                if let Some(ref mode) = ws_wallpaper.mode {
+                    return ScaleMode::from_str(mode);
+                }
+            }
+        }
+
+        // Fall back to global wallpaper mode
+        ScaleMode::from_str(&self.config.wallpaper.mode)
+    }
+
+    /// Update border colors for all windows based on focus state
+    pub fn update_window_border_colors(&mut self) {
+        let focused_color = self.theme.focused_border();
+        let unfocused_color = self.theme.unfocused_border();
+        let focused_id = self.window_tree.focused();
+
+        // Get all window IDs first to avoid borrow conflicts
+        let window_ids: Vec<NodeId> = self.window_tree.find_windows();
+
+        for window_id in window_ids {
+            if let Some(container) = self.window_tree.get_mut(window_id) {
+                let is_focused = Some(window_id) == focused_id;
+                container.border_color = if is_focused {
+                    focused_color
+                } else {
+                    unfocused_color
+                };
+                container.border_width = self.config.general.border_width;
             }
         }
     }

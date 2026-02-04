@@ -86,11 +86,12 @@ pub fn handle_keyboard_shortcut<BackendData: 'static>(
                 manager.switch_to_workspace(workspace_num);
 
                 // Recalculate layout for the new workspace
-                if let Some(workspace_id) = manager.active_workspace() {
-                    // Get screen geometry from backend
-                    // For now, use a default - this will be updated in rendering
-                    let screen_geometry = codeverse_window::Rectangle::new(0, 0, 1920, 1080);
-                    manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry);
+                if let Some(_workspace_id) = manager.active_workspace() {
+                    // Use cached screen geometry if available, otherwise use a default
+                    let screen_geometry = compositor.last_screen_geometry
+                        .unwrap_or_else(|| codeverse_window::Rectangle::new(0, 0, 1920, 1080));
+                    let gap_width = compositor.config.general.gap_width as i32;
+                    manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry, gap_width);
                 }
             }
             return true;
@@ -133,10 +134,12 @@ pub fn handle_keyboard_shortcut<BackendData: 'static>(
             } else {
                 // Recalculate layout after changing mode
                 if let Some(ref mut manager) = compositor.workspace_manager {
-                    if let Some(workspace_id) = manager.active_workspace() {
-                        // Get screen geometry from backend - using a default for now
-                        let screen_geometry = codeverse_window::Rectangle::new(0, 0, 1920, 1080);
-                        manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry);
+                    if let Some(_workspace_id) = manager.active_workspace() {
+                        // Use cached screen geometry if available, otherwise use a default
+                        let screen_geometry = compositor.last_screen_geometry
+                            .unwrap_or_else(|| codeverse_window::Rectangle::new(0, 0, 1920, 1080));
+                        let gap_width = compositor.config.general.gap_width as i32;
+                        manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry, gap_width);
                     }
                 }
             }
@@ -148,8 +151,9 @@ pub fn handle_keyboard_shortcut<BackendData: 'static>(
     if logo_pressed && shift_pressed && keysym == Keysym::space {
         debug!("Toggle floating shortcut");
         if let Some(focused_id) = compositor.window_tree.focused() {
-            // Get screen geometry
-            let screen_geometry = codeverse_window::Rectangle::new(0, 0, 1920, 1080);
+            // Use cached screen geometry if available, otherwise use a default
+            let screen_geometry = compositor.last_screen_geometry
+                .unwrap_or_else(|| codeverse_window::Rectangle::new(0, 0, 1920, 1080));
 
             if let Err(e) = compositor.floating_manager.toggle_floating(
                 &mut compositor.window_tree,
@@ -160,8 +164,9 @@ pub fn handle_keyboard_shortcut<BackendData: 'static>(
             } else {
                 // Recalculate layout after toggle
                 if let Some(ref mut manager) = compositor.workspace_manager {
-                    if let Some(workspace_id) = manager.active_workspace() {
-                        manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry);
+                    if let Some(_workspace_id) = manager.active_workspace() {
+                        let gap_width = compositor.config.general.gap_width as i32;
+                        manager.layout_active_workspace(&mut compositor.window_tree, screen_geometry, gap_width);
                     }
                 }
             }

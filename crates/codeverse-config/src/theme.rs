@@ -100,6 +100,14 @@ impl Default for NordColors {
 /// Font configuration
 #[derive(Debug, Clone)]
 pub struct FontConfig {
+    /// Title font family
+    pub title_family: String,
+    /// UI font family
+    pub ui_family: String,
+    /// Font weight for titles
+    pub title_weight: u32,
+    /// Font weight for UI
+    pub ui_weight: u32,
     pub title_size: u32,
     pub input_size: u32,
     pub item_size: u32,
@@ -110,6 +118,10 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
+            title_family: "sans-serif".to_string(),
+            ui_family: "sans-serif".to_string(),
+            title_weight: 600,
+            ui_weight: 400,
             title_size: 18,
             input_size: 16,
             item_size: 14,
@@ -126,6 +138,12 @@ pub struct NordTheme {
     pub fonts: FontConfig,
     pub border_width: u32,
     pub gap_width: u32,
+    /// Window opacity (0.0 - 1.0, for future transparency support)
+    pub opacity: f32,
+    /// Enable window shadows (not yet implemented)
+    pub shadow_enabled: bool,
+    /// Animation duration in milliseconds (for future transitions)
+    pub animation_duration: u32,
 }
 
 impl Default for NordTheme {
@@ -135,6 +153,9 @@ impl Default for NordTheme {
             fonts: FontConfig::default(),
             border_width: 2,
             gap_width: 10,
+            opacity: 1.0,
+            shadow_enabled: false,
+            animation_duration: 200,
         }
     }
 }

@@ -48,3 +48,10 @@ gbm = { workspace = true }
 drm = { workspace = true }
 libseat = { workspace = true }
 input = { workspace = true }
+
+# Image loading for wallpaper support
+image = { version = "0.24", default-features = false, features = ["png", "jpeg"], optional = true }
+
+[features]
+default = ["wallpaper"]
+wallpaper = ["dep:image"]

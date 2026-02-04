@@ -1,4 +1,5 @@
 use crate::compositor::{ClientState, CodeVerseCompositor};
+use crate::render::{create_border_elements, load_cached_wallpaper, make_wallpaper_key, OutputRenderElements};
 use smithay::{
     backend::{
         allocator::{
@@ -16,11 +17,11 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                surface::render_elements_from_surface_tree,
                 Kind,
             },
             gles::GlesRenderer,
-            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer, MultiTexture},
+            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer},
             Color32F,
         },
         session::{
@@ -37,7 +38,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{Display, DisplayHandle},
     },
-    utils::{DeviceFd, Point},
+    utils::{DeviceFd, Physical, Point, Rectangle},
     wayland::socket::ListeningSocketSource,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -434,9 +435,9 @@ impl CodeVerseCompositor<DrmBackendData> {
     };
 
     // Initialize the DRM output (from anvil)
-    // We use MultiRenderer type
+    // We use MultiRenderer type with combined element type for borders and surfaces
     type Renderer<'a> = MultiRenderer<'a, 'a, GbmGlesBackend<GlesRenderer, DrmDeviceFd>, GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
-    type RenderElement<'a> = WaylandSurfaceRenderElement<Renderer<'a>>;
+    type RenderElement<'a> = OutputRenderElements<Renderer<'a>>;
 
     // Empty render elements for initialization
     use smithay::backend::drm::output::DrmOutputRenderElements;
@@ -613,12 +614,11 @@ impl CodeVerseCompositor<DrmBackendData> {
 
         // Renderer type alias for this function
         type Renderer<'a> = MultiRenderer<'a, 'a, GbmGlesBackend<GlesRenderer, DrmDeviceFd>, GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
-        type RenderElement<'a> = WaylandSurfaceRenderElement<Renderer<'a>>;
-
-        // Get renderer for this GPU
-        let mut renderer = self.backend_data.gpus.single_renderer(&render_node)?;
+        // Use combined element type that can hold both surfaces and solid color (border) elements
+        type RenderElement<'a> = OutputRenderElements<Renderer<'a>>;
 
         // Get screen geometry from the output for layout calculation
+        // Do this before getting the renderer to avoid borrow conflicts
         let screen_geometry = {
             let backend = self.backend_data.backends.get(&node).ok_or("Backend not found for geometry")?;
             let surface_data = backend.surfaces.get(&crtc).ok_or("Surface not found for geometry")?;
@@ -631,9 +631,23 @@ impl CodeVerseCompositor<DrmBackendData> {
             }
         };
 
+        // Get wallpaper configuration BEFORE getting the renderer to avoid borrow conflicts
+        let workspace_index = self.workspace_manager.as_ref().map(|m| m.active_workspace_num().saturating_sub(1));
+        let wallpaper_path = self.get_wallpaper_path(workspace_index).map(|s| s.to_string());
+        let wallpaper_mode = self.get_wallpaper_mode(workspace_index);
+        let theme_bg_array = self.theme.background().to_f32_array();
+        let theme_bg_color = Color32F::new(theme_bg_array[0], theme_bg_array[1], theme_bg_array[2], theme_bg_array[3]);
+
+        // Get renderer for this GPU
+        let mut renderer = self.backend_data.gpus.single_renderer(&render_node)?;
+
+        // Cache the screen geometry for the commit handler
+        self.last_screen_geometry = Some(screen_geometry);
+
         // Calculate layout before rendering to ensure windows have proper geometries
         if let Some(ref mut manager) = self.workspace_manager {
-            manager.layout_active_workspace(&mut self.window_tree, screen_geometry);
+            let gap_width = self.config.general.gap_width as i32;
+            manager.layout_active_workspace(&mut self.window_tree, screen_geometry, gap_width);
         }
 
         // Collect visible windows and their surfaces
@@ -646,8 +660,10 @@ impl CodeVerseCompositor<DrmBackendData> {
             vec![]
         };
 
-        // Collect window surfaces with their locations
+        // Collect window surfaces with their locations and border data
         let mut window_surfaces = Vec::new();
+        let mut border_data: Vec<(codeverse_window::Rectangle, u32, codeverse_config::NordColor, String)> = Vec::new();
+
         for window_id in &visible_windows {
             if let Some(container) = self.window_tree.get(*window_id) {
                 debug!("Window {:?} found in tree, has_window={}", window_id, container.window.is_some());
@@ -657,6 +673,14 @@ impl CodeVerseCompositor<DrmBackendData> {
                     let surface = window_handle.wl_surface().clone();
                     debug!("Window {:?} at location {:?}, geom: {:?}", window_id, location, geom);
                     window_surfaces.push((surface, location));
+
+                    // Collect border data
+                    border_data.push((
+                        geom,
+                        container.border_width,
+                        container.border_color,
+                        format!("window-{:?}", window_id),
+                    ));
                 }
             } else {
                 debug!("Window {:?} NOT found in tree", window_id);
@@ -665,8 +689,68 @@ impl CodeVerseCompositor<DrmBackendData> {
 
         debug!("Collected {} window surfaces for rendering", window_surfaces.len());
 
-        // Create render elements from window surfaces
+        // Create combined render elements list
         let mut render_elements: Vec<RenderElement<'_>> = Vec::new();
+
+        // Wallpaper handling for DRM backend
+        // Due to type compatibility constraints between MultiRenderer and TextureRenderElement,
+        // the DRM backend loads the wallpaper and samples its average color for the clear_color.
+        // This provides visual integration with the wallpaper config while maintaining type safety.
+        // Full texture rendering is available in the Winit backend.
+        let clear_color = if let Some(path) = wallpaper_path {
+            let screen_width = screen_geometry.width;
+            let screen_height = screen_geometry.height;
+
+            // Load the cached wallpaper to get its data
+            if load_cached_wallpaper(&mut self.wallpaper_cache, &path, screen_width, screen_height, wallpaper_mode) {
+                let key = make_wallpaper_key(&path, screen_width, screen_height, wallpaper_mode);
+                if let Some(cached) = self.wallpaper_cache.get(&key) {
+                    // Sample the center pixel of the wallpaper for a representative color
+                    let center_x = (cached.width / 2) as usize;
+                    let center_y = (cached.height / 2) as usize;
+                    let stride = cached.width as usize * 4;
+                    let offset = center_y * stride + center_x * 4;
+
+                    if offset + 3 < cached.data.len() {
+                        let r = cached.data[offset] as f32 / 255.0;
+                        let g = cached.data[offset + 1] as f32 / 255.0;
+                        let b = cached.data[offset + 2] as f32 / 255.0;
+                        let a = cached.data[offset + 3] as f32 / 255.0;
+                        debug!("Using wallpaper center color: r={:.2}, g={:.2}, b={:.2}", r, g, b);
+                        Color32F::new(r, g, b, a)
+                    } else {
+                        theme_bg_color
+                    }
+                } else {
+                    theme_bg_color
+                }
+            } else {
+                theme_bg_color
+            }
+        } else {
+            // No wallpaper configured, use theme background
+            theme_bg_color
+        };
+
+        // Add border render elements (behind windows) - only if borders are enabled
+        let borders_enabled = self.config.general.borders_enabled;
+        if borders_enabled {
+            for (geom, border_width, color, id) in &border_data {
+                let rect: Rectangle<i32, Physical> = Rectangle::from_loc_and_size(
+                    (geom.x, geom.y),
+                    (geom.width as i32, geom.height as i32),
+                );
+                let borders = create_border_elements(rect, *border_width, *color, id);
+                // Wrap border elements in OutputRenderElements::Solid
+                for border in borders {
+                    render_elements.push(RenderElement::Solid(border));
+                }
+            }
+        }
+        let border_count = render_elements.len();
+        debug!("Created {} border elements (borders_enabled={})", border_count, borders_enabled);
+
+        // Add window surface elements (on top of borders)
         for (surface, location) in &window_surfaces {
             let elements = render_elements_from_surface_tree(
                 &mut renderer,
@@ -677,21 +761,16 @@ impl CodeVerseCompositor<DrmBackendData> {
                 Kind::Unspecified,
             );
             debug!("Created {} render elements for surface at {:?}", elements.len(), location);
-            render_elements.extend(elements);
+            // Wrap surface elements in OutputRenderElements::Surface
+            for element in elements {
+                render_elements.push(RenderElement::Surface(element));
+            }
         }
-        debug!("Total render elements: {}", render_elements.len());
+        debug!("Total render elements: {} ({} borders + {} surfaces)", render_elements.len(), border_count, render_elements.len() - border_count);
 
         // Get the backend and surface data
         let backend = self.backend_data.backends.get_mut(&node).ok_or("Backend not found")?;
         let surface_data = backend.surfaces.get_mut(&crtc).ok_or("Surface not found")?;
-
-        // Nord theme background color (nord0: #2e3440)
-        let clear_color = Color32F::new(
-            0x2e as f32 / 255.0,
-            0x34 as f32 / 255.0,
-            0x40 as f32 / 255.0,
-            1.0,
-        );
 
         // Render the frame
         match surface_data.drm_output.render_frame::<Renderer<'_>, RenderElement<'_>>(

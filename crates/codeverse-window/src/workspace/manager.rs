@@ -130,17 +130,18 @@ impl WorkspaceManager {
     }
 
     /// Calculate and apply layout for the active workspace
-    pub fn layout_active_workspace(&mut self, tree: &mut WindowTree, screen_geometry: Rectangle) {
+    pub fn layout_active_workspace(&mut self, tree: &mut WindowTree, screen_geometry: Rectangle, gap_width: i32) {
         if let Some(workspace_id) = self.active_workspace() {
             debug!(
-                "Laying out workspace {} with geometry {:?}",
+                "Laying out workspace {} with geometry {:?} and gap_width {}",
                 self.active_workspace_num(),
-                screen_geometry
+                screen_geometry,
+                gap_width
             );
 
             // Import the trait to use calculate_layout
             use crate::tree::WindowTreeExt;
-            tree.calculate_layout(workspace_id, screen_geometry);
+            tree.calculate_layout(workspace_id, screen_geometry, gap_width);
         }
     }
 

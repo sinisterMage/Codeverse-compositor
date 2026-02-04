@@ -30,17 +30,39 @@ impl<BackendData: 'static> CompositorHandler for CodeVerseCompositor<BackendData
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
+
+            // Find the window that owns this surface
+            if let Some(window_id) = self
                 .window_tree
                 .find_windows()
                 .into_iter()
-                .find(|_| {
-                    // TODO: Phase 2 - match window surface
+                .find(|&window_id| {
+                    if let Some(container) = self.window_tree.get(window_id) {
+                        if let Some(ref window_handle) = container.window {
+                            return window_handle.wl_surface() == &root;
+                        }
+                    }
                     false
                 })
             {
-                // TODO: Phase 2 - handle window updates
-                debug!("Window committed: {:?}", window);
+                debug!("Surface committed for window {:?}", window_id);
+
+                // Only trigger layout recalculation if we have cached screen geometry
+                // The actual rendering loop will set the screen geometry and do initial layout
+                if let Some(screen_rect) = self.last_screen_geometry {
+                    // Check if the window's geometry is uninitialized (0x0)
+                    // to avoid unnecessary re-layout on every commit
+                    let needs_layout = self.window_tree.get(window_id)
+                        .map(|c| c.geometry.width == 0 || c.geometry.height == 0)
+                        .unwrap_or(false);
+
+                    if needs_layout {
+                        if let Some(ref mut manager) = self.workspace_manager {
+                            let gap_width = self.config.general.gap_width as i32;
+                            manager.layout_active_workspace(&mut self.window_tree, screen_rect, gap_width);
+                        }
+                    }
+                }
             }
         }
     }

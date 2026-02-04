@@ -15,6 +15,15 @@ default_layout = "splith"
 # Focus follows mouse (not yet implemented)
 focus_follows_mouse = false
 
+# Enable window borders
+borders_enabled = true
+
+# Enable window shadows (not yet implemented)
+shadows_enabled = false
+
+# Title bar height for floating windows (in pixels)
+title_bar_height = 30
+
 [theme]
 # Use Nord color scheme (currently the only option)
 use_nord = true
@@ -40,6 +49,27 @@ max_results = 10
 
 # Show application descriptions
 show_descriptions = true
+
+[wallpaper]
+# Path to wallpaper image (supports PNG, JPEG)
+# path = "/path/to/wallpaper.png"
+
+# Scaling mode: "fill", "fit", "stretch", "center", "tile"
+mode = "fill"
+
+# Per-workspace wallpapers (optional)
+# [[wallpaper.per_workspace]]
+# workspace = 1
+# path = "/path/to/workspace1.png"
+# mode = "fill"
+
+# Output/Display Configuration
+# [[outputs]]
+# name = "HDMI-A-1"
+# resolution = [1920, 1080]
+# refresh_rate = 60
+# scale = 1.0
+# position = [0, 0]
 
 # Keybindings
 # Format: "Modifier+Key" = action
