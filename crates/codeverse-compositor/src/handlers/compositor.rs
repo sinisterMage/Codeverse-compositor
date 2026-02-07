@@ -61,6 +61,7 @@ impl<BackendData: 'static> CompositorHandler for CodeVerseCompositor<BackendData
                             let gap_width = self.config.general.gap_width as i32;
                             manager.layout_active_workspace(&mut self.window_tree, screen_rect, gap_width);
                         }
+                        self.send_pending_configures();
                     }
                 }
             }

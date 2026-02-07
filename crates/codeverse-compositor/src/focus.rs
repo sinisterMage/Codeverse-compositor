@@ -35,43 +35,59 @@ impl IsAlive for KeyboardFocusTarget {
 impl<BackendData: 'static> KeyboardTarget<CodeVerseCompositor<BackendData>> for KeyboardFocusTarget {
     fn enter(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _keys: Vec<KeysymHandle<'_>>,
-        _serial: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        keys: Vec<KeysymHandle<'_>>,
+        serial: Serial,
     ) {
-        // Handle keyboard enter event
+        match self {
+            KeyboardFocusTarget::Surface(s) => {
+                KeyboardTarget::enter(s, seat, data, keys, serial);
+            }
+        }
     }
 
     fn leave(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _serial: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        serial: Serial,
     ) {
-        // Handle keyboard leave event
+        match self {
+            KeyboardFocusTarget::Surface(s) => {
+                KeyboardTarget::leave(s, seat, data, serial);
+            }
+        }
     }
 
     fn key(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _key: KeysymHandle<'_>,
-        _state: smithay::backend::input::KeyState,
-        _serial: Serial,
-        _time: u32,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        key: KeysymHandle<'_>,
+        state: smithay::backend::input::KeyState,
+        serial: Serial,
+        time: u32,
     ) {
-        // Handle key press/release
+        match self {
+            KeyboardFocusTarget::Surface(s) => {
+                KeyboardTarget::key(s, seat, data, key, state, serial, time);
+            }
+        }
     }
 
     fn modifiers(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _modifiers: ModifiersState,
-        _serial: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        modifiers: ModifiersState,
+        serial: Serial,
     ) {
-        // Handle modifier state changes
+        match self {
+            KeyboardFocusTarget::Surface(s) => {
+                KeyboardTarget::modifiers(s, seat, data, modifiers, serial);
+            }
+        }
     }
 }
 
@@ -101,137 +117,167 @@ impl IsAlive for PointerFocusTarget {
 impl<BackendData: 'static> PointerTarget<CodeVerseCompositor<BackendData>> for PointerFocusTarget {
     fn enter(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &MotionEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &MotionEvent,
     ) {
-        // Handle pointer enter
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::enter(s, seat, data, event),
+        }
     }
 
     fn motion(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &MotionEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &MotionEvent,
     ) {
-        // Handle pointer motion
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::motion(s, seat, data, event),
+        }
     }
 
     fn relative_motion(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &RelativeMotionEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &RelativeMotionEvent,
     ) {
-        // Handle relative pointer motion
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::relative_motion(s, seat, data, event),
+        }
     }
 
     fn button(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &ButtonEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &ButtonEvent,
     ) {
-        // Handle pointer button press/release
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::button(s, seat, data, event),
+        }
     }
 
     fn axis(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _frame: AxisFrame,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        frame: AxisFrame,
     ) {
-        // Handle scroll/axis events
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::axis(s, seat, data, frame),
+        }
     }
 
     fn frame(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
     ) {
-        // Handle frame event
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::frame(s, seat, data),
+        }
     }
 
     fn leave(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _serial: Serial,
-        _time: u32,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        serial: Serial,
+        time: u32,
     ) {
-        // Handle pointer leave
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::leave(s, seat, data, serial, time),
+        }
     }
 
     fn gesture_swipe_begin(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GestureSwipeBeginEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GestureSwipeBeginEvent,
     ) {
-        // Handle gesture swipe begin
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_swipe_begin(s, seat, data, event),
+        }
     }
 
     fn gesture_swipe_update(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GestureSwipeUpdateEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GestureSwipeUpdateEvent,
     ) {
-        // Handle gesture swipe update
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_swipe_update(s, seat, data, event),
+        }
     }
 
     fn gesture_swipe_end(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GestureSwipeEndEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GestureSwipeEndEvent,
     ) {
-        // Handle gesture swipe end
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_swipe_end(s, seat, data, event),
+        }
     }
 
     fn gesture_pinch_begin(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GesturePinchBeginEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GesturePinchBeginEvent,
     ) {
-        // Handle gesture pinch begin
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_pinch_begin(s, seat, data, event),
+        }
     }
 
     fn gesture_pinch_update(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GesturePinchUpdateEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GesturePinchUpdateEvent,
     ) {
-        // Handle gesture pinch update
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_pinch_update(s, seat, data, event),
+        }
     }
 
     fn gesture_pinch_end(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GesturePinchEndEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GesturePinchEndEvent,
     ) {
-        // Handle gesture pinch end
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_pinch_end(s, seat, data, event),
+        }
     }
 
     fn gesture_hold_begin(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GestureHoldBeginEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GestureHoldBeginEvent,
     ) {
-        // Handle gesture hold begin
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_hold_begin(s, seat, data, event),
+        }
     }
 
     fn gesture_hold_end(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &GestureHoldEndEvent,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &GestureHoldEndEvent,
     ) {
-        // Handle gesture hold end
+        match self {
+            PointerFocusTarget::Surface(s) => PointerTarget::gesture_hold_end(s, seat, data, event),
+        }
     }
 }
 
@@ -252,70 +298,84 @@ use smithay::input::touch::{
 impl<BackendData: 'static> TouchTarget<CodeVerseCompositor<BackendData>> for PointerFocusTarget {
     fn down(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &TouchDownEvent,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &TouchDownEvent,
+        seq: Serial,
     ) {
-        // Handle touch down
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::down(s, seat, data, event, seq),
+        }
     }
 
     fn up(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &TouchUpEvent,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &TouchUpEvent,
+        seq: Serial,
     ) {
-        // Handle touch up
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::up(s, seat, data, event, seq),
+        }
     }
 
     fn motion(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &TouchMotionEvent,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &TouchMotionEvent,
+        seq: Serial,
     ) {
-        // Handle touch motion
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::motion(s, seat, data, event, seq),
+        }
     }
 
     fn frame(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        seq: Serial,
     ) {
-        // Handle touch frame
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::frame(s, seat, data, seq),
+        }
     }
 
     fn cancel(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        seq: Serial,
     ) {
-        // Handle touch cancel
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::cancel(s, seat, data, seq),
+        }
     }
 
     fn shape(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &ShapeEvent,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &ShapeEvent,
+        seq: Serial,
     ) {
-        // Handle touch shape
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::shape(s, seat, data, event, seq),
+        }
     }
 
     fn orientation(
         &self,
-        _seat: &Seat<CodeVerseCompositor<BackendData>>,
-        _data: &mut CodeVerseCompositor<BackendData>,
-        _event: &OrientationEvent,
-        _seq: Serial,
+        seat: &Seat<CodeVerseCompositor<BackendData>>,
+        data: &mut CodeVerseCompositor<BackendData>,
+        event: &OrientationEvent,
+        seq: Serial,
     ) {
-        // Handle touch orientation
+        match self {
+            PointerFocusTarget::Surface(s) => TouchTarget::orientation(s, seat, data, event, seq),
+        }
     }
 }
 
@@ -334,8 +394,7 @@ impl<BackendData: 'static> SeatHandler for CodeVerseCompositor<BackendData> {
         _seat: &Seat<Self>,
         _focused: Option<&Self::KeyboardFocus>,
     ) {
-        // Handle focus changes
-        // TODO: In Phase 2, we'll update window tree focus here
+        // Focus changes are tracked via window_tree.set_focused()
     }
 
     fn cursor_image(
@@ -343,7 +402,6 @@ impl<BackendData: 'static> SeatHandler for CodeVerseCompositor<BackendData> {
         _seat: &Seat<Self>,
         _image: smithay::input::pointer::CursorImageStatus,
     ) {
-        // Handle cursor image changes
         // TODO: Update cursor rendering
     }
 }

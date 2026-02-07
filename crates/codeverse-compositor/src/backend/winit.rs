@@ -151,89 +151,116 @@ pub fn init_winit() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             WinitEvent::Input(input_event) => {
-                // Handle keyboard input
-                if let InputEvent::Keyboard { event } = input_event {
-                    // Get keyboard from seat
-                    if let Some(keyboard) = compositor.seat.get_keyboard() {
-                        keyboard.input::<(), _>(
+                match input_event {
+                    InputEvent::Keyboard { event } => {
+                        if let Some(keyboard) = compositor.seat.get_keyboard() {
+                            keyboard.input::<(), _>(
+                                &mut compositor,
+                                event.key_code(),
+                                event.state(),
+                                0.into(),
+                                0,
+                                |compositor_state, modifiers, keysym_handle| {
+                                    if event.state() != KeyState::Pressed {
+                                        return FilterResult::Forward;
+                                    }
+                                    let keysym = keysym_handle.modified_sym();
+                                    if handle_keyboard_shortcut(compositor_state, keysym, *modifiers) {
+                                        FilterResult::Intercept(())
+                                    } else {
+                                        FilterResult::Forward
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    InputEvent::PointerButton { event } => {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let button = event.button_code();
+                        let button_state = event.state();
+                        let location = compositor.pointer_location;
+
+                        // On press: set focus to window under cursor
+                        if button_state == smithay::backend::input::ButtonState::Pressed {
+                            if let Some(window_id) = compositor.window_under(location) {
+                                compositor.window_tree.set_focused(Some(window_id));
+                                compositor.update_window_border_colors();
+
+                                // Set seat keyboard focus so key events reach the client
+                                let kb_surface = compositor.window_tree.get(window_id)
+                                    .and_then(|c| c.window.as_ref())
+                                    .map(|t| t.wl_surface().clone());
+                                if let Some(surface) = kb_surface {
+                                    let keyboard = compositor.seat.get_keyboard().unwrap();
+                                    keyboard.set_focus(
+                                        &mut compositor,
+                                        Some(crate::focus::KeyboardFocusTarget::Surface(surface)),
+                                        serial,
+                                    );
+                                }
+                            }
+                        }
+
+                        // Handle floating window operations (move, resize, title bar drag)
+                        handle_pointer_button(&mut compositor, button, button_state, serial, 0, location);
+
+                        // Forward button event to seat pointer for client delivery
+                        let pointer = compositor.seat.get_pointer().unwrap();
+                        pointer.button(
                             &mut compositor,
-                            event.key_code(),
-                            event.state(),
-                            0.into(),
-                            0,
-                            |compositor_state, modifiers, keysym_handle| {
-                                // Only handle key press
-                                if event.state() != KeyState::Pressed {
-                                    return FilterResult::Forward;
-                                }
-
-                                // Get the keysym
-                                let keysym = keysym_handle.modified_sym();
-
-                                // Try to handle as shortcut
-                                if handle_keyboard_shortcut(compositor_state, keysym, *modifiers) {
-                                    // Shortcut was handled, don't forward to clients
-                                    FilterResult::Intercept(())
-                                } else {
-                                    // Not a shortcut, forward to clients
-                                    FilterResult::Forward
-                                }
+                            &smithay::input::pointer::ButtonEvent {
+                                serial,
+                                time: 0,
+                                button,
+                                state: button_state,
                             },
                         );
+                        pointer.frame(&mut compositor);
                     }
-                }
+                    InputEvent::PointerMotionAbsolute { event } => {
+                        let output_size = backend.window_size();
+                        let logical_size = Size::<i32, Logical>::from((output_size.w, output_size.h));
+                        let pos = event.position_transformed(logical_size);
+                        let location = Point::<f64, Logical>::from((pos.x, pos.y));
 
-                // Handle pointer button input
-                if let InputEvent::PointerButton { event } = input_event {
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let button = event.button_code();
-                    let button_state = event.state();
+                        compositor.pointer_location = location;
 
-                    // Get current pointer location (default to 0,0 if not available)
-                    let location = Point::<f64, Logical>::from((0.0, 0.0));
+                        // Handle floating window operations (drag, resize)
+                        handle_pointer_motion(&mut compositor, location, 0);
 
-                    handle_pointer_button(
-                        &mut compositor,
-                        button,
-                        button_state,
-                        serial,
-                        0,
-                        location,
-                    );
-                }
+                        // Forward to seat pointer with surface focus for client delivery
+                        let under = compositor.surface_under(location);
+                        let pointer = compositor.seat.get_pointer().unwrap();
+                        pointer.motion(
+                            &mut compositor,
+                            under,
+                            &smithay::input::pointer::MotionEvent {
+                                location,
+                                serial: SERIAL_COUNTER.next_serial(),
+                                time: 0,
+                            },
+                        );
+                        pointer.frame(&mut compositor);
+                    }
+                    InputEvent::PointerMotion { .. } => {
+                        // Winit backend only generates absolute motion events, not relative.
+                        // Relative motion is handled by the DRM backend.
+                    }
+                    InputEvent::PointerAxis { event } => {
+                        let horizontal = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                        let vertical = event.amount(Axis::Vertical).unwrap_or(0.0);
 
-                // Handle pointer motion input
-                if let InputEvent::PointerMotion { ref event } = input_event {
-                    // For relative motion, we'd need to track absolute position
-                    // For now, skip relative motion events
-                }
+                        let frame = smithay::input::pointer::AxisFrame::new(0)
+                            .source(event.source())
+                            .value(Axis::Horizontal, horizontal)
+                            .value(Axis::Vertical, vertical);
 
-                // Handle pointer absolute motion (from touchpad/tablet)
-                if let InputEvent::PointerMotionAbsolute { ref event } = input_event {
-                    let output_size = backend.window_size();
-                    // Convert from Physical to Logical
-                    let logical_size = Size::<i32, Logical>::from((output_size.w, output_size.h));
-                    let pos = event.position_transformed(logical_size);
-                    let location = Point::<f64, Logical>::from((pos.x, pos.y));
-
-                    handle_pointer_motion(
-                        &mut compositor,
-                        location,
-                        0,
-                    );
-                }
-
-                // Handle pointer axis (scroll wheel)
-                if let InputEvent::PointerAxis { event } = input_event {
-                    let horizontal = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                    let vertical = event.amount(Axis::Vertical).unwrap_or(0.0);
-
-                    let frame = smithay::input::pointer::AxisFrame::new(0)
-                        .source(event.source())
-                        .value(Axis::Horizontal, horizontal)
-                        .value(Axis::Vertical, vertical);
-
-                    handle_pointer_axis(&mut compositor, frame);
+                        // Forward to seat pointer for client delivery
+                        let pointer = compositor.seat.get_pointer().unwrap();
+                        pointer.axis(&mut compositor, frame);
+                        pointer.frame(&mut compositor);
+                    }
+                    _ => {}
                 }
             }
             WinitEvent::CloseRequested => {
@@ -260,6 +287,9 @@ pub fn init_winit() -> Result<(), Box<dyn std::error::Error>> {
             manager.layout_active_workspace(&mut compositor.window_tree, screen_rect, gap_width);
         }
 
+        // Send configure events to windows whose layout size changed
+        compositor.send_pending_configures();
+
         // Render windows
         if let Err(err) = render_output(&mut backend, &mut compositor) {
             error!("Rendering error: {}", err);
@@ -267,6 +297,10 @@ pub fn init_winit() -> Result<(), Box<dyn std::error::Error>> {
 
         // Present
         backend.submit(None).expect("Failed to submit frame");
+
+        // Flush protocol messages to clients (critical: without this, clients never receive
+        // configure events and can't render)
+        compositor.display_handle.flush_clients().ok();
     }
 
     info!("Compositor shutting down");

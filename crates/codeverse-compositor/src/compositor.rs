@@ -13,7 +13,7 @@ use smithay::{
             Display, DisplayHandle,
         },
     },
-    utils::{Clock, Monotonic},
+    utils::{Clock, Logical, Monotonic, Point},
     wayland::{
         compositor::CompositorState,
         output::OutputManagerState,
@@ -92,6 +92,9 @@ pub struct CodeVerseCompositor<BackendData: 'static> {
     /// Cached screen geometry (updated during rendering, used by commit handler)
     pub last_screen_geometry: Option<codeverse_window::Rectangle>,
 
+    /// Current pointer location (tracked for DRM/bare-metal backends)
+    pub pointer_location: Point<f64, Logical>,
+
     /// Backend-specific data
     pub backend_data: BackendData,
 }
@@ -158,6 +161,7 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
             launcher_active: false,
             wallpaper_cache: WallpaperCache::new(),
             last_screen_geometry: None,
+            pointer_location: (0.0, 0.0).into(),
             backend_data,
         }
     }
@@ -205,6 +209,11 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
                             state.size = Some((800, 600).into());
                         });
                         toplevel.send_configure();
+
+                        // Track the initial configured size
+                        if let Some(container) = self.window_tree.get_mut(window_id) {
+                            container.last_configured_size = Some((800, 600));
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Failed to insert window into tree: {}", e);
@@ -364,6 +373,148 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
 
         // Fall back to global wallpaper mode
         ScaleMode::from_str(&self.config.wallpaper.mode)
+    }
+
+    /// Send configure events to windows whose layout size has changed
+    pub fn send_pending_configures(&mut self) {
+        let window_ids: Vec<NodeId> = self.window_tree.find_windows();
+
+        for window_id in window_ids {
+            // Read geometry and check if configure is needed
+            let configure_info = if let Some(container) = self.window_tree.get(window_id) {
+                let geom = container.geometry;
+                let new_size = (geom.width, geom.height);
+
+                // Skip if size is zero (not yet laid out)
+                if new_size.0 == 0 || new_size.1 == 0 {
+                    continue;
+                }
+
+                // Skip if size hasn't changed
+                if container.last_configured_size == Some(new_size) {
+                    continue;
+                }
+
+                // Need the ToplevelSurface handle
+                container.window.clone().map(|w| (w, new_size))
+            } else {
+                continue;
+            };
+
+            if let Some((toplevel, new_size)) = configure_info {
+                // Send configure with the layout-assigned size
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((new_size.0 as i32, new_size.1 as i32).into());
+                });
+                toplevel.send_configure();
+
+                // Update last_configured_size
+                if let Some(container) = self.window_tree.get_mut(window_id) {
+                    container.last_configured_size = Some(new_size);
+                }
+            }
+        }
+    }
+
+    /// Find the Wayland surface under a given point (for seat pointer focus).
+    /// Returns the focus target and surface-local coordinates.
+    /// Checks floating windows first (top of stack), then tiled windows.
+    pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        let x = pos.x as i32;
+        let y = pos.y as i32;
+
+        // Check floating windows first (rendered on top), reverse stacking order
+        for &window_id in self.floating_manager.get_stack().iter().rev() {
+            if let Some(container) = self.window_tree.get(window_id) {
+                if container.is_floating {
+                    if let Some(ref toplevel) = container.window {
+                        let geom = container.geometry;
+                        let title_bar_height = self.floating_manager.title_bar_height() as i32;
+                        let surface_y = geom.y + title_bar_height;
+
+                        // Check if point is within the surface area (below title bar)
+                        if x >= geom.x && x < geom.x + geom.width as i32
+                            && y >= surface_y && y < surface_y + geom.height as i32
+                        {
+                            let surface = toplevel.wl_surface().clone();
+                            let surface_local = Point::from((
+                                pos.x - geom.x as f64,
+                                pos.y - surface_y as f64,
+                            ));
+                            return Some((crate::focus::PointerFocusTarget::Surface(surface), surface_local));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check tiled windows
+        if let Some(ref manager) = self.workspace_manager {
+            let visible = manager.visible_windows(&self.window_tree);
+            for window_id in visible {
+                if let Some(container) = self.window_tree.get(window_id) {
+                    if !container.is_floating {
+                        let geom = container.geometry;
+                        if x >= geom.x && x < geom.x + geom.width as i32
+                            && y >= geom.y && y < geom.y + geom.height as i32
+                        {
+                            if let Some(ref toplevel) = container.window {
+                                let surface = toplevel.wl_surface().clone();
+                                let surface_local = Point::from((
+                                    pos.x - geom.x as f64,
+                                    pos.y - geom.y as f64,
+                                ));
+                                return Some((crate::focus::PointerFocusTarget::Surface(surface), surface_local));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find the window (NodeId) under a given point.
+    /// Checks floating windows first (including title bar area), then tiled.
+    pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<NodeId> {
+        let x = pos.x as i32;
+        let y = pos.y as i32;
+
+        // Check floating windows first (including title bar area)
+        for &window_id in self.floating_manager.get_stack().iter().rev() {
+            if let Some(container) = self.window_tree.get(window_id) {
+                if container.is_floating {
+                    let geom = container.geometry;
+                    let title_bar_height = self.floating_manager.title_bar_height() as i32;
+                    let total_height = geom.height as i32 + title_bar_height;
+                    if x >= geom.x && x < geom.x + geom.width as i32
+                        && y >= geom.y && y < geom.y + total_height
+                    {
+                        return Some(window_id);
+                    }
+                }
+            }
+        }
+
+        // Check tiled windows
+        if let Some(ref manager) = self.workspace_manager {
+            let visible = manager.visible_windows(&self.window_tree);
+            for window_id in visible {
+                if let Some(container) = self.window_tree.get(window_id) {
+                    if !container.is_floating {
+                        let geom = container.geometry;
+                        if x >= geom.x && x < geom.x + geom.width as i32
+                            && y >= geom.y && y < geom.y + geom.height as i32
+                        {
+                            return Some(window_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Update border colors for all windows based on focus state

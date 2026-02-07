@@ -126,6 +126,9 @@ pub struct Container {
 
     /// Original geometry before floating (for toggle back)
     pub floating_original_geometry: Option<Rectangle>,
+
+    /// Last size sent to the client via send_configure (to avoid spamming)
+    pub last_configured_size: Option<(u32, u32)>,
 }
 
 impl Container {
@@ -146,6 +149,7 @@ impl Container {
             app_id: None,
             is_floating: false,
             floating_original_geometry: None,
+            last_configured_size: None,
         }
     }
 

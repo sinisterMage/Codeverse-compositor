@@ -419,6 +419,7 @@ impl CodeVerseCompositor<DrmBackendData> {
         },
     );
 
+    output.create_global::<CodeVerseCompositor<DrmBackendData>>(&self.backend_data.dh);
     output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
     output.set_preferred(wl_mode);
 
@@ -497,13 +498,17 @@ impl CodeVerseCompositor<DrmBackendData> {
 
     /// Handle input events from libinput
     fn handle_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
-        use crate::input::handle_keyboard_shortcut;
-        use smithay::backend::input::{Event, KeyState, KeyboardKeyEvent};
+        use crate::input::{handle_keyboard_shortcut, handle_pointer_button, handle_pointer_motion, handle_pointer_axis};
+        use smithay::backend::input::{
+            AbsolutePositionEvent, Axis, Event, KeyState, KeyboardKeyEvent,
+            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        };
         use smithay::input::keyboard::FilterResult;
+        use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER};
 
         match event {
             InputEvent::Keyboard { event } => {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let key_code = event.key_code();
                 let state = event.state();
@@ -538,20 +543,53 @@ impl CodeVerseCompositor<DrmBackendData> {
                 );
             }
             InputEvent::PointerMotion { event } => {
-                debug!("Pointer motion event");
-                // TODO: Handle pointer motion properly
+                let delta = (event.delta_x(), event.delta_y());
+                let mut new_location = self.pointer_location;
+                new_location.x += delta.0;
+                new_location.y += delta.1;
+
+                // Clamp to screen bounds
+                if let Some(screen_geom) = self.last_screen_geometry {
+                    new_location.x = new_location.x.max(0.0).min(screen_geom.width as f64 - 1.0);
+                    new_location.y = new_location.y.max(0.0).min(screen_geom.height as f64 - 1.0);
+                }
+
+                self.pointer_location = new_location;
+                let time = Event::time_msec(&event);
+                handle_pointer_motion(self, new_location, time);
             }
             InputEvent::PointerMotionAbsolute { event } => {
-                debug!("Pointer absolute motion event");
-                // TODO: Handle absolute pointer motion
+                let output_size = self.last_screen_geometry
+                    .map(|g| Size::<i32, Logical>::from((g.width as i32, g.height as i32)))
+                    .unwrap_or_else(|| (1920, 1080).into());
+
+                let pos = event.position_transformed(output_size);
+                let location = Point::<f64, Logical>::from((pos.x, pos.y));
+                self.pointer_location = location;
+
+                let time = Event::time_msec(&event);
+                handle_pointer_motion(self, location, time);
             }
             InputEvent::PointerButton { event } => {
-                debug!("Pointer button event");
-                // TODO: Handle pointer button properly
+                let serial = SERIAL_COUNTER.next_serial();
+                let button = event.button_code();
+                let button_state = event.state();
+                let time = Event::time_msec(&event);
+                let location = self.pointer_location;
+
+                handle_pointer_button(self, button, button_state, serial, time, location);
             }
             InputEvent::PointerAxis { event } => {
-                debug!("Pointer axis event");
-                // TODO: Handle pointer scroll
+                let horizontal = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                let vertical = event.amount(Axis::Vertical).unwrap_or(0.0);
+                let time = Event::time_msec(&event);
+
+                let frame = smithay::input::pointer::AxisFrame::new(time)
+                    .source(event.source())
+                    .value(Axis::Horizontal, horizontal)
+                    .value(Axis::Vertical, vertical);
+
+                handle_pointer_axis(self, frame);
             }
             _ => {
                 // Other events (touch, tablet, etc.)
@@ -638,9 +676,6 @@ impl CodeVerseCompositor<DrmBackendData> {
         let theme_bg_array = self.theme.background().to_f32_array();
         let theme_bg_color = Color32F::new(theme_bg_array[0], theme_bg_array[1], theme_bg_array[2], theme_bg_array[3]);
 
-        // Get renderer for this GPU
-        let mut renderer = self.backend_data.gpus.single_renderer(&render_node)?;
-
         // Cache the screen geometry for the commit handler
         self.last_screen_geometry = Some(screen_geometry);
 
@@ -649,6 +684,13 @@ impl CodeVerseCompositor<DrmBackendData> {
             let gap_width = self.config.general.gap_width as i32;
             manager.layout_active_workspace(&mut self.window_tree, screen_geometry, gap_width);
         }
+
+        // Send configure events to windows whose layout size changed
+        // (must be done before obtaining the renderer to avoid borrow conflicts)
+        self.send_pending_configures();
+
+        // Get renderer for this GPU
+        let mut renderer = self.backend_data.gpus.single_renderer(&render_node)?;
 
         // Collect visible windows and their surfaces
         let visible_windows = if let Some(ref manager) = self.workspace_manager {
@@ -692,45 +734,51 @@ impl CodeVerseCompositor<DrmBackendData> {
         // Create combined render elements list
         let mut render_elements: Vec<RenderElement<'_>> = Vec::new();
 
-        // Wallpaper handling for DRM backend
-        // Due to type compatibility constraints between MultiRenderer and TextureRenderElement,
-        // the DRM backend loads the wallpaper and samples its average color for the clear_color.
-        // This provides visual integration with the wallpaper config while maintaining type safety.
-        // Full texture rendering is available in the Winit backend.
-        let clear_color = if let Some(path) = wallpaper_path {
+        // Wallpaper handling for DRM backend - render as texture if possible
+        let clear_color = theme_bg_color;
+        if let Some(path) = wallpaper_path {
             let screen_width = screen_geometry.width;
             let screen_height = screen_geometry.height;
 
-            // Load the cached wallpaper to get its data
             if load_cached_wallpaper(&mut self.wallpaper_cache, &path, screen_width, screen_height, wallpaper_mode) {
                 let key = make_wallpaper_key(&path, screen_width, screen_height, wallpaper_mode);
                 if let Some(cached) = self.wallpaper_cache.get(&key) {
-                    // Sample the center pixel of the wallpaper for a representative color
-                    let center_x = (cached.width / 2) as usize;
-                    let center_y = (cached.height / 2) as usize;
-                    let stride = cached.width as usize * 4;
-                    let offset = center_y * stride + center_x * 4;
+                    use smithay::backend::renderer::ImportMem;
+                    use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
+                    use smithay::utils::Transform;
 
-                    if offset + 3 < cached.data.len() {
-                        let r = cached.data[offset] as f32 / 255.0;
-                        let g = cached.data[offset + 1] as f32 / 255.0;
-                        let b = cached.data[offset + 2] as f32 / 255.0;
-                        let a = cached.data[offset + 3] as f32 / 255.0;
-                        debug!("Using wallpaper center color: r={:.2}, g={:.2}, b={:.2}", r, g, b);
-                        Color32F::new(r, g, b, a)
-                    } else {
-                        theme_bg_color
+                    match renderer.import_memory(
+                        &cached.data,
+                        Fourcc::Abgr8888,
+                        (cached.width as i32, cached.height as i32).into(),
+                        false,
+                    ) {
+                        Ok(texture) => {
+                            let texture_buffer = TextureBuffer::from_texture(
+                                &mut renderer,
+                                texture,
+                                1,
+                                Transform::Normal,
+                                None,
+                            );
+                            let texture_element = TextureRenderElement::from_texture_buffer(
+                                (0.0, 0.0),
+                                &texture_buffer,
+                                None,
+                                None,
+                                None,
+                                Kind::Unspecified,
+                            );
+                            render_elements.push(RenderElement::Texture(texture_element));
+                            debug!("Wallpaper texture imported for DRM backend");
+                        }
+                        Err(e) => {
+                            warn!("Failed to import wallpaper texture in DRM backend: {:?}", e);
+                        }
                     }
-                } else {
-                    theme_bg_color
                 }
-            } else {
-                theme_bg_color
             }
-        } else {
-            // No wallpaper configured, use theme background
-            theme_bg_color
-        };
+        }
 
         // Add border render elements (behind windows) - only if borders are enabled
         let borders_enabled = self.config.general.borders_enabled;
