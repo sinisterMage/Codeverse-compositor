@@ -1,7 +1,6 @@
 use crate::compositor::CodeVerseCompositor;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor,
     wayland::{
         buffer::BufferHandler,
         compositor::{get_parent, is_sync_subsurface, CompositorHandler, CompositorState},

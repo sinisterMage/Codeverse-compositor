@@ -1,6 +1,11 @@
 pub mod compositor;
 pub mod data_device;
+pub mod dmabuf;
+pub mod fractional_scale;
+pub mod layer_shell;
 pub mod output;
 pub mod selection;
 pub mod shm;
+pub mod viewporter;
+pub mod xdg_decoration;
 pub mod xdg_shell;

@@ -1,11 +1,9 @@
 use crate::compositor::CodeVerseCompositor;
 use smithay::{
-    delegate_xdg_shell,
     reexports::wayland_server::protocol::wl_seat::WlSeat,
     utils::Serial,
     wayland::shell::xdg::{
         PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-        XdgToplevelSurfaceData,
     },
 };
 use tracing::info;
@@ -19,32 +17,44 @@ impl<BackendData: 'static> XdgShellHandler for CodeVerseCompositor<BackendData> 
         self.handle_new_toplevel(surface);
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        info!("New popup created (not yet implemented)");
-        // TODO: Handle popups in Phase 2
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        info!("New popup created");
+
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+
+        self.popups.push(surface.clone());
+        surface.send_configure().ok();
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        info!("Popup grab request");
-        // TODO: Handle popup grabs
+        // Popup grabs are acknowledged but we don't implement exclusive
+        // grab semantics yet; the popup still renders and receives input
+        // through normal surface focus.
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
-        info!("Popup reposition request");
-        // TODO: Handle popup repositioning
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        surface.send_repositioned(token);
+        surface.send_configure().ok();
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.handle_toplevel_closed(&surface);
     }
 
-    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
         info!("Popup destroyed");
-        // TODO: Handle popup destruction
+        self.popups.retain(|p| p.wl_surface() != surface.wl_surface());
     }
 }

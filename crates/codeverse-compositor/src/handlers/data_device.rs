@@ -1,6 +1,5 @@
 use crate::compositor::CodeVerseCompositor;
 use smithay::{
-    delegate_data_device,
     wayland::selection::data_device::{
         ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
     },

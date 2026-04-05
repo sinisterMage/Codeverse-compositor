@@ -1,13 +1,7 @@
 use crate::compositor::CodeVerseCompositor;
 use codeverse_window::{MouseOperation, ResizeEdge};
-use smithay::input::{
-    pointer::{
-        AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, GrabStartData, MotionEvent,
-        PointerGrab, PointerInnerHandle, RelativeMotionEvent,
-    },
-    SeatHandler,
-};
-use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
+use smithay::input::pointer::AxisFrame;
+use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
 use tracing::debug;
 
 /// Handle pointer button press/release
@@ -15,8 +9,8 @@ pub fn handle_pointer_button<BackendData: 'static>(
     compositor: &mut CodeVerseCompositor<BackendData>,
     button: u32,
     state: smithay::backend::input::ButtonState,
-    serial: Serial,
-    time: u32,
+    _serial: Serial,
+    _time: u32,
     location: Point<f64, Logical>,
 ) {
     let modifiers = compositor
@@ -114,6 +108,32 @@ pub fn handle_pointer_motion<BackendData: 'static>(
     if !matches!(compositor.floating_manager.current_operation(), MouseOperation::None) {
         if let Err(e) = compositor.floating_manager.update_operation(&mut compositor.window_tree, x, y) {
             tracing::warn!("Failed to update operation: {}", e);
+        }
+        return;
+    }
+
+    // Focus follows mouse: when enabled, move keyboard focus to
+    // whichever window the pointer enters.
+    if compositor.config.general.focus_follows_mouse {
+        if let Some(window_id) = compositor.window_under(location) {
+            let current_focus = compositor.window_tree.focused();
+            if current_focus != Some(window_id) {
+                compositor.window_tree.set_focused(Some(window_id));
+                compositor.update_window_border_colors();
+
+                let serial = SERIAL_COUNTER.next_serial();
+                let kb_surface = compositor.window_tree.get(window_id)
+                    .and_then(|c| c.window.as_ref())
+                    .map(|t| t.wl_surface().clone());
+                if let Some(surface) = kb_surface {
+                    let keyboard = compositor.seat.get_keyboard().unwrap();
+                    keyboard.set_focus(
+                        compositor,
+                        Some(crate::focus::KeyboardFocusTarget::Surface(surface)),
+                        serial,
+                    );
+                }
+            }
         }
     }
 }

@@ -38,7 +38,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::{Display, DisplayHandle},
     },
-    utils::{DeviceFd, Physical, Point, Rectangle},
+    utils::{DeviceFd, IsAlive, Physical, Point, Rectangle},
     wayland::socket::ListeningSocketSource,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -88,6 +88,14 @@ struct SurfaceData {
 }
 
 pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging (same as winit backend)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let mut event_loop = EventLoop::try_new()?;
     let mut display = Display::new()?;
     let display_handle = display.handle();
@@ -124,6 +132,25 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut compositor = CodeVerseCompositor::new(&mut display, event_loop.handle(), data);
+
+    // Initialize dmabuf support with format list from primary GPU
+    {
+        use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+        let mut renderer = compositor.backend_data.gpus.single_renderer(&primary_gpu)?;
+        let dmabuf_formats = renderer.as_mut().egl_context().dmabuf_render_formats().clone();
+        let default_feedback =
+            DmabufFeedbackBuilder::new(primary_gpu.dev_id(), dmabuf_formats)
+                .build()
+                .expect("Failed to build dmabuf feedback");
+        let dmabuf_global = compositor
+            .dmabuf_state
+            .create_global_with_default_feedback::<CodeVerseCompositor<DrmBackendData>>(
+                &display_handle,
+                &default_feedback,
+            );
+        compositor.dmabuf_global = Some(dmabuf_global);
+        info!("DMA-BUF global initialized for DRM backend");
+    }
 
     // Initialize workspace manager (required for keybindings to work)
     compositor.init_workspace_manager();
@@ -229,6 +256,9 @@ pub fn init_drm() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         // Dispatch pending events
         event_loop.dispatch(Some(Duration::from_millis(16)), &mut compositor)?;
+
+        // Process IPC commands
+        compositor.process_ipc();
 
         // Render all outputs
         compositor.render_all_outputs();
@@ -809,12 +839,102 @@ impl CodeVerseCompositor<DrmBackendData> {
                 Kind::Unspecified,
             );
             debug!("Created {} render elements for surface at {:?}", elements.len(), location);
-            // Wrap surface elements in OutputRenderElements::Surface
             for element in elements {
                 render_elements.push(RenderElement::Surface(element));
             }
         }
-        debug!("Total render elements: {} ({} borders + {} surfaces)", render_elements.len(), border_count, render_elements.len() - border_count);
+
+        // Render popup surfaces on top of everything else
+        self.popups.retain(|p| p.alive());
+        let popup_surfaces: Vec<_> = self.popups.iter().filter_map(|popup| {
+            let wl_surface = popup.wl_surface().clone();
+            let geo = popup.with_pending_state(|state| state.geometry);
+            let parent = popup.get_parent_surface()?;
+            let parent_loc = window_surfaces.iter()
+                .find(|(s, _)| *s == parent)
+                .map(|(_, loc)| *loc)
+                .unwrap_or_else(|| Point::from((0, 0)));
+            let popup_loc = Point::from((
+                parent_loc.x + geo.loc.x,
+                parent_loc.y + geo.loc.y,
+            ));
+            Some((wl_surface, popup_loc))
+        }).collect();
+
+        for (surface, location) in &popup_surfaces {
+            let elements = render_elements_from_surface_tree(
+                &mut renderer,
+                surface,
+                *location,
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            );
+            for element in elements {
+                render_elements.push(RenderElement::Surface(element));
+            }
+        }
+
+        // Render layer surfaces (panels, bars, etc.) on top
+        for layer_surface in &self.layer_surfaces {
+            if layer_surface.alive() {
+                let layer_loc = Point::from((0i32, 0i32));
+                let elements = render_elements_from_surface_tree(
+                    &mut renderer,
+                    layer_surface.wl_surface(),
+                    layer_loc,
+                    1.0,
+                    1.0,
+                    Kind::Unspecified,
+                );
+                for element in elements {
+                    render_elements.push(RenderElement::Surface(element));
+                }
+            }
+        }
+
+        // Render cursor on DRM backend
+        {
+            use smithay::input::pointer::CursorImageStatus;
+            use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+
+            let cursor_pos = self.pointer_location;
+            match &self.cursor_status {
+                CursorImageStatus::Surface(surface) => {
+                    if surface.alive() {
+                        let cursor_loc = Point::from((cursor_pos.x as i32, cursor_pos.y as i32));
+                        let elements = render_elements_from_surface_tree(
+                            &mut renderer,
+                            surface,
+                            cursor_loc,
+                            1.0,
+                            1.0,
+                            Kind::Unspecified,
+                        );
+                        for element in elements {
+                            render_elements.push(RenderElement::Surface(element));
+                        }
+                    }
+                }
+                _ => {
+                    let cursor_size = smithay::utils::Size::from((8, 12));
+                    let cursor_rect = Rectangle::from_loc_and_size(
+                        (cursor_pos.x as i32, cursor_pos.y as i32),
+                        cursor_size,
+                    );
+                    let cursor_element = SolidColorRenderElement::new(
+                        smithay::backend::renderer::element::Id::new(),
+                        cursor_rect,
+                        1,
+                        Color32F::new(1.0, 1.0, 1.0, 1.0),
+                        Kind::Cursor,
+                    );
+                    render_elements.push(RenderElement::Solid(cursor_element));
+                }
+            }
+        }
+
+        debug!("Total render elements: {} ({} borders + surfaces + popups + cursor)", render_elements.len(), border_count);
 
         // Get the backend and surface data
         let backend = self.backend_data.backends.get_mut(&node).ok_or("Backend not found")?;
@@ -827,7 +947,7 @@ impl CodeVerseCompositor<DrmBackendData> {
             clear_color,
             FrameFlags::empty(),
         ) {
-            Ok(render_result) => {
+            Ok(_render_result) => {
                 // Queue the frame (even if empty, to show background)
                 if let Err(e) = surface_data.drm_output.queue_frame(()) {
                     warn!("Failed to queue frame: {:?}", e);
@@ -859,9 +979,8 @@ fn send_frames_surface_tree_drm(
         surface,
         (),
         |_, _, _| TraversalAction::DoChildren(()),
-        |surface, states, _| {
+        |_surface, states, _| {
             use smithay::wayland::compositor::SurfaceAttributes;
-            use std::cell::RefCell;
 
             // Send frame callback
             for callback in states

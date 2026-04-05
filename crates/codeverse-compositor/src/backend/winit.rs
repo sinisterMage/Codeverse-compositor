@@ -1,5 +1,5 @@
 use crate::compositor::{ClientState, CodeVerseCompositor};
-use crate::input::{handle_keyboard_shortcut, handle_pointer_axis, handle_pointer_button, handle_pointer_motion};
+use crate::input::{handle_keyboard_shortcut, handle_pointer_button, handle_pointer_motion};
 use crate::render::{create_border_elements, BorderRenderElement, load_cached_wallpaper, make_wallpaper_key};
 use smithay::{
     backend::{
@@ -9,9 +9,8 @@ use smithay::{
         },
         renderer::{
             element::{
-                solid::SolidColorRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-                Kind, RenderElement,
+                Kind,
             },
             gles::GlesRenderer,
             utils::draw_render_elements,
@@ -85,6 +84,47 @@ pub fn init_winit() -> Result<(), Box<dyn std::error::Error>> {
     // Create compositor
     let mut compositor = CodeVerseCompositor::new(&mut display, loop_handle.clone(), backend_data);
 
+    // Initialize dmabuf support for winit backend
+    {
+        use smithay::backend::egl::EGLDevice;
+        use smithay::backend::renderer::ImportDma;
+        use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+
+        let render_node = EGLDevice::device_for_display(backend.renderer().egl_context().display())
+            .and_then(|device| device.try_get_render_node());
+
+        match render_node {
+            Ok(Some(node)) => {
+                let dmabuf_formats = backend.renderer().dmabuf_formats();
+                let default_feedback = DmabufFeedbackBuilder::new(node.dev_id(), dmabuf_formats)
+                    .build()
+                    .unwrap();
+                let dmabuf_global = compositor
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<CodeVerseCompositor<WinitData>>(
+                        &display_handle,
+                        &default_feedback,
+                    );
+                compositor.dmabuf_global = Some(dmabuf_global);
+                info!("DMA-BUF global initialized (v4 with feedback) for winit backend");
+            }
+            Ok(None) => {
+                let dmabuf_formats = backend.renderer().dmabuf_formats();
+                let dmabuf_global = compositor
+                    .dmabuf_state
+                    .create_global::<CodeVerseCompositor<WinitData>>(
+                        &display_handle,
+                        dmabuf_formats,
+                    );
+                compositor.dmabuf_global = Some(dmabuf_global);
+                info!("DMA-BUF global initialized (v3 fallback) for winit backend");
+            }
+            Err(err) => {
+                tracing::warn!(?err, "Failed to query render node, dmabuf not available");
+            }
+        }
+    }
+
     // Initialize workspace manager
     compositor.init_workspace_manager();
 
@@ -133,6 +173,9 @@ pub fn init_winit() -> Result<(), Box<dyn std::error::Error>> {
             compositor.running = false;
             break;
         }
+
+        // Process IPC commands
+        compositor.process_ipc();
 
         // Process winit events
         winit_event_loop.dispatch_new_events(|event| match event {
@@ -512,6 +555,52 @@ fn render_output(
         None
     };
 
+    // Collect layer surface elements before starting the frame (renderer borrow)
+    let mut layer_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+    for layer_surface in &compositor.layer_surfaces {
+        if layer_surface.alive() {
+            let layer_loc = Point::from((0i32, 0i32));
+            let elements = render_elements_from_surface_tree(
+                renderer,
+                layer_surface.wl_surface(),
+                layer_loc,
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            );
+            layer_elements.extend(elements);
+        }
+    }
+
+    // Collect popup elements before starting the frame
+    compositor.popups.retain(|p| p.alive());
+    let mut popup_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+    for popup in &compositor.popups {
+        let geo = popup.with_pending_state(|state| state.geometry);
+        if let Some(parent) = popup.get_parent_surface() {
+            let parent_loc = tiled_windows.iter()
+                .find(|(s, _)| *s == parent)
+                .map(|(_, loc)| *loc)
+                .or_else(|| floating_windows_data.iter()
+                    .find(|(s, _, _, _)| *s == parent)
+                    .map(|(_, loc, _, _)| *loc))
+                .unwrap_or_else(|| Point::from((0, 0)));
+            let popup_loc = Point::from((
+                parent_loc.x + geo.loc.x,
+                parent_loc.y + geo.loc.y,
+            ));
+            let elements = render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                popup_loc,
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            );
+            popup_elements.extend(elements);
+        }
+    }
+
     // Start a render frame
     let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
 
@@ -562,8 +651,22 @@ fn render_output(
         tracing::warn!("Failed to draw floating window elements: {:?}", e);
     }
 
+    // Draw layer surfaces (pre-collected before frame start)
+    if !layer_elements.is_empty() {
+        if let Err(e) = draw_render_elements(&mut frame, 1.0, &layer_elements, &[damage]) {
+            tracing::warn!("Failed to draw layer surface elements: {:?}", e);
+        }
+    }
+
+    // Draw popups (pre-collected before frame start)
+    if !popup_elements.is_empty() {
+        if let Err(e) = draw_render_elements(&mut frame, 1.0, &popup_elements, &[damage]) {
+            tracing::warn!("Failed to draw popup elements: {:?}", e);
+        }
+    }
+
     // Finish the frame
-    frame.finish()?;
+    let _ = frame.finish()?;
 
     // Send frame callbacks to all windows
     let time = compositor.clock.now().as_millis() as u32;

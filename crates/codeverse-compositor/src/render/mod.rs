@@ -3,8 +3,8 @@ pub mod wallpaper;
 
 pub use decorations::{create_border_elements, BorderRenderElement};
 pub use wallpaper::{
-    load_cached_wallpaper, load_wallpaper_image, make_wallpaper_key, scale_wallpaper,
-    CachedWallpaper, ScaleMode, WallpaperCache, WallpaperCacheKey,
+    load_cached_wallpaper, make_wallpaper_key,
+    ScaleMode, WallpaperCache,
 };
 
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;

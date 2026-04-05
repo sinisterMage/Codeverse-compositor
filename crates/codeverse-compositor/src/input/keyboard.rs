@@ -1,12 +1,9 @@
 use crate::compositor::CodeVerseCompositor;
 use codeverse_window::{Direction, LayoutMode, Orientation, WindowTreeExt};
-use smithay::input::{
-    keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
-    Seat,
-};
+use smithay::input::keyboard::ModifiersState;
 use std::process::Command;
 use tracing::{debug, info, warn};
-use xkbcommon::xkb::{self, Keysym};
+use xkbcommon::xkb::Keysym;
 
 /// Handle keyboard input for the compositor
 pub fn handle_keyboard_shortcut<BackendData: 'static>(
@@ -201,32 +198,68 @@ pub fn handle_keyboard_shortcut<BackendData: 'static>(
 /// Spawn a test window for testing the compositor
 /// Tries multiple terminal emulators in order of preference
 fn spawn_test_window(socket_name: Option<&str>) {
+    // Prefer terminals that don't use D-Bus single-instance activation,
+    // since GApplication-based apps (ptyxis, gnome-terminal) will delegate
+    // to an existing instance on the parent session instead of opening here.
     let terminals = [
-        "weston-terminal",
+        "foot",
         "alacritty",
         "kitty",
-        "foot",
-        "gnome-terminal",
+        "weston-terminal",
         "konsole",
         "xterm",
+        "ptyxis",
+        "gnome-terminal",
     ];
 
     for terminal in &terminals {
         let mut cmd = Command::new(terminal);
 
-        // Set WAYLAND_DISPLAY to connect to our compositor
+        // Force the client to connect to OUR compositor, not the parent session
         if let Some(socket) = socket_name {
             cmd.env("WAYLAND_DISPLAY", socket);
             info!("Setting WAYLAND_DISPLAY={} for spawned terminal", socket);
         }
+        cmd.env_remove("DISPLAY");
+        cmd.env("GDK_BACKEND", "wayland");
+
+        // Capture stderr so we can log why a client fails
+        cmd.stderr(std::process::Stdio::piped());
 
         match cmd.spawn() {
-            Ok(child) => {
+            Ok(mut child) => {
                 info!("Spawned test window: {} (PID: {})", terminal, child.id());
+
+                let name = terminal.to_string();
+                std::thread::spawn(move || {
+                    use std::io::Read;
+                    let mut stderr_output = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let _ = stderr.read_to_string(&mut stderr_output);
+                    }
+                    let status = child.wait();
+                    match status {
+                        Ok(exit) => {
+                            tracing::warn!(
+                                "Test window '{}' exited with {}:\n{}",
+                                name,
+                                exit,
+                                stderr_output.trim()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Test window '{}' wait failed: {}:\n{}",
+                                name,
+                                e,
+                                stderr_output.trim()
+                            );
+                        }
+                    }
+                });
                 return;
             }
             Err(_) => {
-                // Try next terminal
                 continue;
             }
         }

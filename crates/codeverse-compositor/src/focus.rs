@@ -9,7 +9,7 @@ use smithay::{
         },
         Seat, SeatHandler,
     },
-    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{IsAlive, Serial},
     wayland::seat::WaylandFocus,
 };
@@ -400,8 +400,8 @@ impl<BackendData: 'static> SeatHandler for CodeVerseCompositor<BackendData> {
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
-        _image: smithay::input::pointer::CursorImageStatus,
+        image: smithay::input::pointer::CursorImageStatus,
     ) {
-        // TODO: Update cursor rendering
+        self.cursor_status = image;
     }
 }

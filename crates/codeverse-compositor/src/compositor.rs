@@ -5,7 +5,7 @@ use codeverse_window::{FloatingManager, NodeId, WindowTree, WindowTreeExt, Works
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     delegate_xdg_shell,
-    input::{keyboard::XkbConfig, Seat, SeatState},
+    input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
     reexports::{
         calloop::LoopHandle,
         wayland_server::{
@@ -16,9 +16,18 @@ use smithay::{
     utils::{Clock, Logical, Monotonic, Point},
     wayland::{
         compositor::CompositorState,
+        dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
-        shell::xdg::{ToplevelSurface, XdgShellState},
+        shell::{
+            wlr_layer::{LayerSurface, WlrLayerShellState},
+            xdg::{
+                decoration::XdgDecorationState,
+                PopupSurface, ToplevelSurface, XdgShellState,
+            },
+        },
+        fractional_scale::FractionalScaleManagerState,
         shm::ShmState,
+        viewporter::ViewporterState,
     },
 };
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -38,6 +47,9 @@ pub struct CodeVerseCompositor<BackendData: 'static> {
     /// XDG shell state (handles windows, popups)
     pub xdg_shell_state: XdgShellState,
 
+    /// XDG decoration state (server/client-side decoration negotiation)
+    pub xdg_decoration_state: XdgDecorationState,
+
     /// Seat state (input devices)
     pub seat_state: SeatState<Self>,
 
@@ -46,6 +58,24 @@ pub struct CodeVerseCompositor<BackendData: 'static> {
 
     /// Data device state (clipboard, drag-and-drop)
     pub data_device_state: DataDeviceState,
+
+    /// DMA-BUF state (zero-copy GPU buffer sharing)
+    pub dmabuf_state: DmabufState,
+
+    /// DMA-BUF global handle (may be None if backend doesn't support it)
+    pub dmabuf_global: Option<DmabufGlobal>,
+
+    /// Layer shell state (wlr-layer-shell for panels, notifications, etc.)
+    pub layer_shell_state: WlrLayerShellState,
+
+    /// Active layer surfaces
+    pub layer_surfaces: Vec<LayerSurface>,
+
+    /// Viewporter state (wp_viewporter for buffer transforms)
+    pub viewporter_state: ViewporterState,
+
+    /// Fractional scale manager state
+    pub fractional_scale_manager_state: FractionalScaleManagerState,
 
     /// Output manager state (displays)
     pub output_manager_state: OutputManagerState,
@@ -95,6 +125,15 @@ pub struct CodeVerseCompositor<BackendData: 'static> {
     /// Current pointer location (tracked for DRM/bare-metal backends)
     pub pointer_location: Point<f64, Logical>,
 
+    /// Current cursor image status (set by clients)
+    pub cursor_status: CursorImageStatus,
+
+    /// Active popup surfaces (rendered above toplevels)
+    pub popups: Vec<PopupSurface>,
+
+    /// IPC server for external tooling
+    pub ipc_server: Option<codeverse_ipc::IpcServer>,
+
     /// Backend-specific data
     pub backend_data: BackendData,
 }
@@ -110,10 +149,15 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
         // Initialize Smithay states
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let dmabuf_state = DmabufState::new();
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+        let viewporter_state = ViewporterState::new::<Self>(&display_handle);
+        let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&display_handle);
 
         // Create seat
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat-0");
@@ -143,9 +187,16 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
             loop_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             seat_state,
             shm_state,
             data_device_state,
+            dmabuf_state,
+            dmabuf_global: None,
+            layer_shell_state,
+            layer_surfaces: Vec::new(),
+            viewporter_state,
+            fractional_scale_manager_state,
             output_manager_state,
             seat,
             window_tree,
@@ -162,6 +213,9 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
             wallpaper_cache: WallpaperCache::new(),
             last_screen_geometry: None,
             pointer_location: (0.0, 0.0).into(),
+            cursor_status: CursorImageStatus::default_named(),
+            popups: Vec::new(),
+            ipc_server: codeverse_ipc::IpcServer::bind().ok(),
             backend_data,
         }
     }
@@ -515,6 +569,70 @@ impl<BackendData> CodeVerseCompositor<BackendData> {
         }
 
         None
+    }
+
+    /// Poll IPC server and handle any pending commands.
+    pub fn process_ipc(&mut self) {
+        use codeverse_ipc::{IpcCommand, IpcResponse, IpcServer};
+        use std::os::unix::net::UnixStream;
+
+        // Collect all pending commands first to release the borrow on self.ipc_server
+        let pending: Vec<(IpcCommand, UnixStream)> = {
+            let server = match self.ipc_server.as_ref() {
+                Some(s) => s,
+                None => return,
+            };
+            let mut cmds = Vec::new();
+            while let Some(pair) = server.try_recv() {
+                cmds.push(pair);
+            }
+            cmds
+        };
+
+        for (cmd, stream) in pending {
+            let response = match cmd {
+                IpcCommand::Ping => IpcResponse::Pong,
+                IpcCommand::GetWorkspaces => {
+                    let (active, count) = self.workspace_manager.as_ref()
+                        .map(|m| (m.active_workspace_num(), 10))
+                        .unwrap_or((1, 10));
+                    IpcResponse::Workspaces { active, count }
+                }
+                IpcCommand::SwitchWorkspace { number } => {
+                    if let Some(ref mut manager) = self.workspace_manager {
+                        manager.switch_to_workspace(number);
+                    }
+                    IpcResponse::Ok
+                }
+                IpcCommand::GetFocusedWindow => {
+                    let title = self.window_tree.focused()
+                        .map(|_| "focused".to_string());
+                    IpcResponse::FocusedWindow { title }
+                }
+                IpcCommand::CloseWindow => {
+                    if let Some(focused_id) = self.window_tree.focused() {
+                        if let Some(container) = self.window_tree.get(focused_id) {
+                            if let Some(ref window) = container.window {
+                                window.send_close();
+                            }
+                        }
+                    }
+                    IpcResponse::Ok
+                }
+                IpcCommand::ReloadConfig => {
+                    self.reload_config();
+                    IpcResponse::Ok
+                }
+                IpcCommand::ToggleLauncher => {
+                    self.toggle_launcher();
+                    IpcResponse::Ok
+                }
+            };
+
+            if let Err(e) = IpcServer::respond(stream, &response) {
+                tracing::warn!("Failed to send IPC response: {}", e);
+            }
+        }
     }
 
     /// Update border colors for all windows based on focus state

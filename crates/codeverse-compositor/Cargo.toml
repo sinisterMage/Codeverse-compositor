@@ -14,6 +14,7 @@ path = "src/main.rs"
 codeverse-window = { path = "../codeverse-window" }
 codeverse-launcher = { path = "../codeverse-launcher" }
 codeverse-config = { path = "../codeverse-config" }
+codeverse-ipc = { path = "../codeverse-ipc" }
 
 # Smithay (all features inherited from workspace, now using git master for libdisplay-info 0.3.0)
 smithay = { workspace = true }

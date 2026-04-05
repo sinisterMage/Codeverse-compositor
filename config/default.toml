@@ -64,6 +64,9 @@ mode = "fill"
 # mode = "fill"
 
 # Output/Display Configuration
+# NOTE: Multi-monitor support is not yet implemented. The compositor currently
+# operates in single-monitor mode. The settings below are parsed but not applied.
+# Multi-output layout and per-output workspace sets are planned for a future release.
 # [[outputs]]
 # name = "HDMI-A-1"
 # resolution = [1920, 1080]
